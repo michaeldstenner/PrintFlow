@@ -1,0 +1,30 @@
+# Generated files
+*.log
+*.3mf
+test_selection.tmp
+
+# FreeCAD backup files  
+*.FCStd1
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Development
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Private/local files
+*.local.*
+local/
+.claude

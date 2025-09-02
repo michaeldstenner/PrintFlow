@@ -1,0 +1,2976 @@
+#!/usr/bin/env python3
+# -*- mode: python; eval: (auto-revert-mode 1); fill-column: 78; -*-
+
+"""
+PrintFlow: 3MF Export for a fast and efficient 3D Printing Workflow
+
+Keep your whole 3D printing project in FreeCAD: part orientation, bed
+layout, designed supports, slicer settings.  PrintFlow makes intelligent
+use of FreeCAD's organizational structures (Parts, Assemblies, Groups) and
+Property system to control the 3D printing process.
+
+Why? 3D printing is sometimes called "rapid prototyping", and this macro is
+designed to make it faster, especially by reduceing iteration time.  You
+spend less time fiddling in the slicer and stay focused on design.
+
+Key Features:
+- Choose what to export:
+  - Easy for simple stuff: put "Export" in the object label
+    (e.g. "ExportGroup" or "Print_Bed_1_Export")
+  - Use properties to fine-tune for complex projects
+  - Select and print: selection overrides everything
+- Organize for printing:
+  - Assembly contents are treated as separete objects.  Assemblies are
+    great for print layout and part orientation.
+  - StdParts become slicer objects with multi-part support; useful for
+    multiple extruders or designed supports.
+  - Groups are FreeCAD organization only (no impact on output structure)
+- Choose slicer settings directly in FreeCAD object properties
+  - Infill, perimeters, layer height, etc.
+  - Settings are just passed through, so if the slicer can save it in a
+    3mf file, you can specify it in FreeCAD.
+  - Set them *once* in FreeCAD so that you don't need to set them in the
+    slicer every time you tweak the model.  Makes it much less painful and
+    error-prone to work on complex projects with lots of iteration.
+
+Usage:
+
+Basic Usage:
+1. Open your FreeCAD document
+2. Select objects in Tree View
+3. Run the macro: Macro > Execute macro > PrintFlow.FCMacro
+4. Macro auto-generates 3MF filename based on your document name
+5. Macro exports 3MF and optionally launches your slicer
+
+Advanced Configuration (for complex projects):
+
+Need more control? Add properties to objects for fine-tuned behavior:
+
+Export Control:
+- Add "Export" property (Boolean) in "Export" group to control export of
+  individual object heirarchies
+- Right-click object > Properties > Property > Add Property > Group: "Export"
+
+Slicer Settings:
+- Add slicer properties like "extruder", "layer_height", "fill_density" in
+  "Slicer" group
+- Property Group: "Slicer" (not "Export" - different group!)
+- Settings persist in your FreeCAD file, no need to reconfigure in slicer
+
+Fine-grained Control:
+- Properties inherit through the tree
+- Object naming, grouping, and export structure can be customized
+- See the full manual at: https://wiki.freecad.org/Macro_PrintFlow
+
+Requirements:
+- FreeCAD 1.0 or later
+- Objects must have valid Shape geometry
+- PrusaSlicer installation (optional, for automatic launching)
+
+Slicer Setup (for auto-launch):
+- Create a "SlicerCommand" property in your document (or use default
+  slicer_wrapper script in your macro folder)
+- Point it to your slicer: e.g.,
+  "/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
+- Advanced: Use the included slicer_wrapper script for enhanced control
+"""
+
+__Name__ = "PrintFlow"
+__Comment__ = ("Streamlined 3D Printing Workflow - export FreeCAD to 3MF")
+__Author__ = "Michael Stenner"
+__Version__ = "1.0.0"
+__Date__ = "2025-08-28"
+__License__ = "MIT"
+__Wiki__ = "https://wiki.freecad.org/Macro_PrintFlow"
+__Icon__ = "PrintFlow.svg"
+__Status__ = "Stable"
+
+import sys
+import os
+import os.path
+import subprocess
+import re
+import inspect
+import datetime
+import copy
+from collections import defaultdict
+from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
+from pprint import pformat
+
+try:
+    import FreeCAD
+    import FreeCADGui as Gui
+    from PySide import QtGui
+except ImportError:
+    print('Outside FreeCAD environment')
+
+# So, it turns out you can't pass command line arguments to FreeCAD
+# Macros.  Who knew?  Rather than packing them into the Macro
+# definition, you can put them here:
+# Configuration (equivalent to old DEFAULT_ARGS = ['-Ds'])
+RUN_SLICER = True
+DEBUG = 2  # 0=off, 1=error, 2=warn, 3=log, 4=debug
+DOC_DEFAULTS = True
+APPEND_VERSION = False
+SHOW_ERROR_DIALOGS = True  # Set to False for development/testing
+# you might find it convenient to not call the slicer directly.  For
+# example, I like to send the keystrokes to PrusaSlicer to clear the
+# platter and start a new project (amazingly, not a command line option)
+SLICER_COMMAND = None  # Set to override default slicer selection
+LOGFILE = os.path.join(os.path.dirname(__file__), "PrintFlow.log")
+_LOGFILE_FO = None
+
+def dbprint(*args, level=4, source=1):
+    """Debug print with function context and optional file logging.
+
+    Only prints when DEBUG >= level. Formats output with calling function
+    context and indents multi-line values for readability in FreeCAD's
+    report view. Also writes to LOGFILE if defined.
+    
+    Args:
+        source: Stack frame depth for source info. None=no source, int=frames back
+    """
+    if DEBUG < level:
+        return
+
+    if source is None:
+        s = str(args[0])
+    else:
+        f = inspect.stack()[source]
+        fn = os.path.split(f.filename)[1]
+        s = f'{args[0]}  ({fn}:{f.lineno}:{f.function})'
+    for v in args[1:]:
+        for l in str(v).splitlines():
+            s += '\n' + ' ' * 4 + l
+    if LOGFILE:
+        global _LOGFILE_FO
+        if not _LOGFILE_FO:
+            import datetime
+            timestamp = datetime.datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S")
+            print(f'Logging to {LOGFILE}')
+            _LOGFILE_FO = open(LOGFILE, 'w')
+            msg = (f'=== PrintFlow Started Logging to '
+                   f'{LOGFILE} at {timestamp} ===\n')
+            _LOGFILE_FO.write(msg)
+            _LOGFILE_FO.flush()
+        _LOGFILE_FO.write(s + '\n')
+        _LOGFILE_FO.flush()
+    
+    # Strip ANSI escape codes for console output
+    s = re.sub(r'\x1b\[[0-9;]*m', '', s)
+    
+    # Use appropriate FreeCAD Console method based on level
+    if level == 1:  # error
+        FreeCAD.Console.PrintError(s + '\n')
+    elif level == 2:  # warn
+        FreeCAD.Console.PrintWarning(s + '\n')
+    elif level == 3:  # log
+        FreeCAD.Console.PrintMessage(s + '\n')
+    else:  # debug
+        print(s)
+
+def error(title, message=None, details=None):
+    """Log error messages (level 1) - critical failures with popup dialog."""
+    if message is None:
+        # Single argument case - treat title as the full message
+        full_message = str(title)
+        title = "PrintFlow Error"
+        message = full_message
+
+    dbprint(f"{title}: {message}", level=1, source=None)
+    if details:
+        dbprint(f"Error details: {details}", level=1, source=None)
+
+    # Show popup dialog
+    if SHOW_ERROR_DIALOGS:
+        try:
+            import FreeCADGui as Gui
+            from PySide import QtGui
+
+            msg_box = QtGui.QMessageBox()
+            msg_box.setIcon(QtGui.QMessageBox.Critical)
+            msg_box.setWindowTitle(title)
+            msg_box.setText(message)
+            if details:
+                msg_box.setDetailedText(str(details))
+            msg_box.exec_()
+        except Exception:
+            pass  # Fallback if GUI not available
+
+def warn(*args):
+    """Log warning messages (level 2) - suspicious but recoverable."""
+    dbprint(*args, level=2, source=None)
+
+def log(*args):
+    """Log info messages (level 3) - user-helpful progress info."""
+    dbprint(*args, level=3, source=None)
+
+def debug(*args):
+    """Log debug messages (level 4) - developer debugging details."""
+    dbprint(*args, level=4, source=2)
+
+def fl(template, lst):
+    """Format List: apply a string template to every item in a list
+    usage: print(fl(template, list_obj))
+    currently only works for positional arguments; lst must be a list
+    of tuples, and format must contain un-named format strings.
+    """
+    #print(template, lst)
+    return ''.join([template.format(*o) for o in lst])
+
+
+def get_run_slicer():
+    """Get RunSlicer setting with precedence: document > parameters > module default."""
+    # 1. Document-level property
+    doc = FreeCAD.ActiveDocument
+    if doc and hasattr(doc, 'RunSlicer'):
+        return doc.RunSlicer
+
+    # 2. FreeCAD Parameters
+    try:
+        param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
+        return param_group.GetBool("RunSlicer", RUN_SLICER)
+    except:
+        return RUN_SLICER
+
+
+def get_append_version():
+    """Get AppendVersion setting with precedence: document > parameters > module default."""
+    # 1. Document-level property
+    doc = FreeCAD.ActiveDocument
+    if doc and hasattr(doc, 'AppendVersion'):
+        return doc.AppendVersion
+    
+    # 2. FreeCAD Parameters
+    try:
+        param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
+        return param_group.GetBool("AppendVersion", APPEND_VERSION)
+    except:
+        return APPEND_VERSION
+
+
+def get_slicer_format():
+    """Get SlicerFormat setting with precedence: document > parameters > default."""
+    # 1. Document-level property
+    doc = FreeCAD.ActiveDocument
+    if doc and hasattr(doc, 'SlicerFormat') and doc.SlicerFormat:
+        return doc.SlicerFormat
+    
+    # 2. FreeCAD Parameters
+    try:
+        param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
+        return param_group.GetString("SlicerFormat", "PrusaSlicer")
+    except:
+        return "PrusaSlicer"
+
+
+def get_slicer_path():
+    """Get slicer command with precedence: module > document > parameters > browse.
+    
+    Returns path to slicer executable, prompting user to browse if needed.
+    """
+    # 1. Module-level override
+    if SLICER_COMMAND is not None:
+        return SLICER_COMMAND
+    
+    # 2. Document-level property
+    doc = FreeCAD.ActiveDocument
+    if doc and hasattr(doc, 'SlicerPath') and doc.SlicerPath:
+        return doc.SlicerPath
+    
+    # 3. FreeCAD Parameters
+    try:
+        param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
+        slicer_cmd = param_group.GetString("SlicerPath", "")
+        if slicer_cmd:
+            return slicer_cmd
+    except:
+        pass
+    
+    # 4. First-run setup dialog
+    return setup_first_run()
+
+
+def setup_first_run():
+    """Show first-run setup dialog to configure PrintFlow preferences."""
+    try:
+        from PySide import QtGui
+        
+        # Create main dialog
+        dialog = QtGui.QDialog()
+        dialog.setWindowTitle("PrintFlow First-Run Setup")
+        dialog.setFixedSize(500, 300)
+        
+        layout = QtGui.QVBoxLayout()
+        
+        # Welcome message
+        welcome = QtGui.QLabel("Welcome to PrintFlow! Let's configure your preferences:")
+        welcome.setWordWrap(True)
+        layout.addWidget(welcome)
+        
+        # Slicer configuration
+        slicer_group = QtGui.QGroupBox("Slicer Configuration")
+        slicer_layout = QtGui.QVBoxLayout()
+        
+        # Slicer format selection
+        format_layout = QtGui.QHBoxLayout()
+        format_label = QtGui.QLabel("Slicer Format:")
+        format_combo = QtGui.QComboBox()
+        format_combo.addItem("PrusaSlicer")
+        format_layout.addWidget(format_label)
+        format_layout.addWidget(format_combo)
+        slicer_layout.addLayout(format_layout)
+        
+        # Slicer path selection
+        path_layout = QtGui.QHBoxLayout()
+        path_label = QtGui.QLabel("Slicer Path:")
+        slicer_path_edit = QtGui.QLineEdit()
+        slicer_path_edit.setPlaceholderText("Path to your slicer executable...")
+        browse_button = QtGui.QPushButton("Browse...")
+        
+        def browse_for_slicer():
+            file_dialog = QtGui.QFileDialog()
+            file_dialog.setWindowTitle("Select 3D Printing Slicer")
+            file_dialog.setNameFilter("Executables (*)")
+            if file_dialog.exec_():
+                selected = file_dialog.selectedFiles()[0]
+                slicer_path_edit.setText(selected)
+        
+        browse_button.clicked.connect(browse_for_slicer)
+        
+        path_layout.addWidget(path_label)
+        path_layout.addWidget(slicer_path_edit)
+        path_layout.addWidget(browse_button)
+        slicer_layout.addLayout(path_layout)
+        
+        slicer_group.setLayout(slicer_layout)
+        layout.addWidget(slicer_group)
+        
+        # Options
+        options_group = QtGui.QGroupBox("Default Behavior")
+        options_layout = QtGui.QVBoxLayout()
+        
+        run_slicer_check = QtGui.QCheckBox("Auto-launch slicer after export")
+        run_slicer_check.setChecked(RUN_SLICER)
+        
+        append_version_check = QtGui.QCheckBox("Add version numbers to filenames")
+        append_version_check.setChecked(APPEND_VERSION)
+        
+        options_layout.addWidget(run_slicer_check)
+        options_layout.addWidget(append_version_check)
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+        
+        # Buttons
+        button_layout = QtGui.QHBoxLayout()
+        ok_button = QtGui.QPushButton("OK")
+        cancel_button = QtGui.QPushButton("Cancel")
+        
+        def save_settings():
+            slicer_path = slicer_path_edit.text().strip()
+            if not slicer_path:
+                QtGui.QMessageBox.warning(dialog, "Error", 
+                                        "Please select a slicer executable.")
+                return
+            
+            try:
+                param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
+                param_group.SetString("SlicerPath", slicer_path)
+                param_group.SetString("SlicerFormat", format_combo.currentText())
+                param_group.SetBool("RunSlicer", run_slicer_check.isChecked())
+                param_group.SetBool("AppendVersion", append_version_check.isChecked())
+                log(f"Saved PrintFlow preferences: path={slicer_path}, "
+                       f"format={format_combo.currentText()}, "
+                       f"run_slicer={run_slicer_check.isChecked()}, "
+                       f"append_version={append_version_check.isChecked()}")
+                dialog.accept()
+            except Exception as e:
+                QtGui.QMessageBox.critical(dialog, "Error", 
+                                         f"Could not save preferences: {str(e)}")
+        
+        ok_button.clicked.connect(save_settings)
+        cancel_button.clicked.connect(dialog.reject)
+        
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+        
+        dialog.setLayout(layout)
+        
+        if dialog.exec_() == QtGui.QDialog.Accepted:
+            return slicer_path_edit.text().strip()
+        else:
+            # User cancelled - return fallback
+            return os.path.join(os.path.dirname(__file__), "slicer_wrapper")
+            
+    except Exception as e:
+        error("First-run setup failed", str(e))
+        # Fallback to simple file dialog
+        try:
+            from PySide import QtGui
+            dialog = QtGui.QFileDialog()
+            dialog.setWindowTitle("Select 3D Printing Slicer")
+            dialog.setNameFilter("Executables (*)")
+            
+            if dialog.exec_():
+                selected_path = dialog.selectedFiles()[0]
+                if selected_path:
+                    # Save to parameters for future use
+                    try:
+                        param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
+                        param_group.SetString("SlicerPath", selected_path)
+                        log(f"Saved slicer command to parameters: {selected_path}")
+                    except:
+                        warn("Could not save slicer command to parameters")
+                    return selected_path
+        except:
+            warn("Could not show slicer selection dialog")
+        
+        # Final fallback
+        return os.path.join(os.path.dirname(__file__), "slicer_wrapper")
+
+
+
+
+def get_fc_props(fcobj,
+                 testfunc=None,
+                 names=None,
+                 groups=None,
+                 defaults=None,
+                 default_group='Default'):
+    """get FreeCAD object properties
+
+    Arguments:
+        testfunc(groupname, propname): property will be ignored if
+            testfunc returns boolean false.  Default behavior is to
+            require prop to be in names (if not None) and group to be
+            in groups (if not None)
+        names - if provided, properties whose names are not "in" it
+            will be ignored
+        groups - if provided, properties whose groups are not "in" it
+            will be ignored
+        defaults - a mapping type providing default values if the
+            property isn't defined in the object.  If this is not
+            provided, the a property missing from the FreeCAD object
+            will also be missing from the return.  Note that you can
+            use the same object as both names and defaults.
+        default_group - a string or mapping type giving the name of
+            the group to apply to defaults.  If it's a mapping type,
+            it maps property name to that property's group.
+
+    Return Values:
+        prop[name] = value
+        prop_group[name] = groupname
+    """
+    if testfunc is None:
+
+        def testfunc(g, p):
+            if names is not None and p not in names:
+                return False
+            if groups is not None and g not in groups:
+                return False
+            return True
+
+    prop = {}
+    prop_group = {}
+    o = fcobj  # the freecad object
+    if o is None:
+        return {}, {}
+    for p in o.PropertiesList:
+        # p = property name (string)
+        g = o.getGroupOfProperty(p)  # group name (string)
+        if testfunc(g, p):
+            prop[p] = o.getPropertyByName(p)
+            prop_group[p] = g
+    if defaults is not None:
+        if type(default_group) is str:
+            default_group = {k: default_group for k in defaults}
+        for k, v in defaults.items():
+            if k not in prop:
+                prop[k] = v
+                prop_group = default_group.get(k, 'Default')
+    return prop, prop_group
+
+
+class FCObjectWrapper:
+    """Wrapper object for individual FreeCAD objects
+
+    We don't want to actually modify the FreeCAD objects or tree
+    structure, so we'll put this thin wrapper around them.  It
+    includes only the essential data and a reference to the FreeCAD
+    object itself.
+
+    We do get a little fancy for Links and eventually "link descendents".
+    You know how the same object will show up multiple times in the Tree
+    View, but it's actually the same object?  We will actually make
+    distinct wrappers for each of those "mirror" branches.
+    """
+
+    def __init__(self, fcobj, link=None):
+        self.fcobj = fcobj
+        self.children = []  # will be populated by FCObjectTree
+
+        self.link = link
+        if not link and fcobj and hasattr(fcobj, 'LinkedObject') \
+           and fcobj.LinkedObject:
+            self.link = fcobj.LinkedObject
+
+        if fcobj is None:  # special case for the "root" object
+            # this isn't a real FreeCAD object - just a container here
+            self.parent = None
+            self.label = 'ROOT'
+        else:
+            self.parent = None  # Will be set later by TreeView structure
+            # All wrappers use their fcobj's label
+            self.label = self.fcobj.Label
+
+        self._init_attributes()
+        self.prop, self.prop_group = self._init_properties()
+
+        # Initialize iprop early and copy linked object properties for
+        # Link wrappers
+        self.iprop = {}
+
+        if self.link:
+
+            # Copy linked object's slicer properties to iprop
+            link_props, _ = get_fc_props(self.link, testfunc=self.prop_test)
+            for key, value in link_props.items():
+                if not key.startswith('Export'):  # Only slicer properties
+                    self.iprop[key] = value
+                    debug(f"LINK INHERIT: Copied {key}={value} from "
+                          f"{self.link.Label} to {self.label}")
+
+    def _init_attributes(self):
+        """Initialize wrapper attributes from FreeCAD object"""
+        # Extract key FreeCAD object attributes
+        self.selected = self.fcobj in Gui.Selection.getSelection()
+        self.has_shape = hasattr(self.fcobj, 'Shape')
+        self.visible = getattr(self.fcobj, "Visibility", None)
+        self.klass = type(self.fcobj).__name__
+        self.typeid = getattr(self.fcobj, 'TypeId', None)
+
+    prop_test = staticmethod(lambda g, p: g in ('Export', 'Slicer'))
+
+    def _init_properties(self, test=None):
+        """get FreeCAD object properties of interest
+        Default behavior is to get all properties of groups "Export"
+        and "Slicer"
+        """
+        if test is None:
+            test = self.prop_test
+        return get_fc_props(self.fcobj, testfunc=test)
+
+    def tessellate(self, tree_objects=None):
+        """Tessellate object shape and apply transformation matrices.
+
+        Args:
+            tree_objects: Dict mapping labels to wrapper objects
+                         (needed for Assembly placement logic)
+
+        Returns:
+            tuple: (transformation_matrix, transformed_vertices,
+                   triangles)
+        """
+        if self.has_shape and self.fcobj and hasattr(self.fcobj, 'Shape'):
+            try:
+                vertices, triangles = self.fcobj.Shape.tessellate(0.01)
+            except Exception as e:
+                print(f"ERROR: Tessellation failed for {self.label}: {e}")
+                vertices, triangles = [], []
+        else:
+            vertices, triangles = [], []
+
+        # Build cumulative placement matrix by walking up parent chain
+        # Assembly objects can be skipped based on IgnoreAssemblyPlacement
+        matrix = FreeCAD.Matrix()
+        current_wrapper = self
+
+        while current_wrapper and current_wrapper.parent and tree_objects:
+            # pw = parent wrapper
+            pw = tree_objects.get(current_wrapper.parent)
+            if not pw:
+                break
+
+            # Skip Assembly placement matrices if
+            # IgnoreAssemblyPlacement=True
+            skip_placement = False
+            if (pw.typeid and pw.typeid.startswith('Assembly::')):
+                if pw.iprop.get('IgnoreAssemblyPlacement', True):
+                    skip_placement = True
+
+            if (pw.fcobj and hasattr(pw.fcobj, 'Placement')
+                    and not skip_placement):
+                matrix = pw.fcobj.Placement.Matrix.multiply(matrix)
+
+            current_wrapper = pw
+
+        # Transform all vertices using the cumulative placement matrix
+        transformed_vertices = []
+        for v in vertices:
+            # Convert to FreeCAD Vector, apply matrix, convert back
+            vec = FreeCAD.Vector(v.x, v.y, v.z)
+            transformed_vec = matrix.multiply(vec)
+            tv = transformed_vec  # transformed vector
+            transformed_vertices.append((tv.x, tv.y, tv.z))
+
+        return matrix, transformed_vertices, triangles
+
+    ###############################################################
+    # Debugging Methods
+    def debug_summary(self):
+        """Produce concise state summary for debugging.
+
+        Returns:
+            str: Single-line summary with consistent column formatting
+        """
+        # Build CSEL flags
+        c_flag = 'C' if self.iprop.get('ExportContainer') else '-'
+        s_flag = 'S' if self.iprop.get('ExportShape') else '-'
+        e_flag = 'E' if self.iprop.get('Export') else '-'
+        l_flag = 'L' if self.link else '-'
+        flags = f"[{c_flag}{s_flag}{e_flag}{l_flag}]"
+
+        # Object name (25 chars)
+        name_col = f"{self.label:<25}"
+
+        # CSEL flags (6 chars)
+        flags_col = f"{flags:>6}"
+
+        # Link info (15 chars)
+        if self.link:
+            link_label = self.link.Label if hasattr(self.link,
+                                                    'Label') else self.link
+            link_col = f"{link_label:<15}"
+        else:
+            link_col = f"{'':15}"
+
+        # Children count (5 chars)
+        children_col = f"{len(self.children):<5}"
+
+        # ExportPath (rest)
+        export_path = self.iprop.get('ExportPath', '')
+        path_col = f"{export_path}" if export_path else ""
+
+        return (f"{name_col} {flags_col} {link_col} "
+                f"{children_col} {path_col}")
+
+    def __deepcopy__(self, memo):
+        """Custom deepcopy to exclude unpicklable FreeCAD objects.
+
+        Creates a copy with FreeCAD object references replaced by labels.
+        We really only need this for the "checkpoint" debugging capability.
+        """
+        # Create new instance without calling __init__
+        cls = self.__class__
+        new_obj = cls.__new__(cls)
+
+        # Copy all attributes except FreeCAD objects
+        for key, value in self.__dict__.items():
+            if key == 'fcobj':
+                # Store just the label instead of the FreeCAD object
+                new_obj.fcobj = value.Label if value else None
+            elif key == 'link':
+                # Store just the label instead of the FreeCAD link object
+                new_obj.link = value.Label if value else None
+            else:
+                # Deep copy other attributes normally
+                new_obj.__dict__[key] = copy.deepcopy(value, memo)
+
+        return new_obj
+
+
+def get_document_tree_getparent(doc=None): ## UNUSED - SEE NOTE
+    """Build document tree using FreeCAD's getParent() method.
+
+    This approach uses the internal FreeCAD object hierarchy as reported
+    by fcobj.getParent(). This reflects the actual object containment
+    relationships in the FreeCAD document structure.
+
+    Note: Objects may also have a 'Group' property that serves as the
+    complement to getParent() - where getParent() reports an object's
+    parent, obj.Group lists an object's children.
+
+    Args:
+        doc: FreeCAD document object. If None, uses ActiveDocument.
+
+    Returns:
+        dict: Mapping of {parent_label: [child_labels]}. The special key
+              'ROOT' contains top-level objects (those with no parent).
+
+    Raises:
+        ValueError: If no document is available.
+    """
+    # NOTE: this function is currently unused.  This was the first
+    # approach I took to building the tree, and it's probably the
+    # slimplest and cleanest.  Unfortunately, it doesn't appear to always
+    # be CORRECT, so I had to switch to grabbing things from the Tree View
+    # GUI element itself.  Ew...  Maybe this will get fixed some day.  The
+    # two functions have the same API (args & return format)
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
+    if not doc:
+        raise ValueError("No FreeCAD document available")
+
+    tree = {None: []}
+
+    # Build parent->children mapping from getParent() relationships
+    for fcobj in doc.Objects:
+        try:
+            parent = fcobj.getParent()
+            parent_label = parent.Label if parent else None
+            child_label = fcobj.Label
+
+            # Initialize parent entry if needed
+            if parent_label not in tree:
+                tree[parent_label] = []
+
+            # Add child to parent's list
+            tree[parent_label].append(child_label)
+
+            # Initialize child entry (may have children of its own)
+            if child_label not in tree:
+                tree[child_label] = []
+
+        except Exception as e:
+            # Log but continue - don't let one bad object break everything
+            warn(f"Failed to process object {fcobj.Label}: {e}")
+
+    return tree
+
+
+def get_document_tree_treeview(doc=None):
+    """Build document tree using FreeCAD's TreeView GUI widget.
+
+    This approach walks the actual TreeView widget structure as displayed
+    in the FreeCAD GUI. This represents the logical organization that
+    users see and interact with, which may differ from internal object
+    relationships.
+
+    For example, boolean operation operands appear as children of the
+    boolean operation in the TreeView, but report the parent Part as their
+    getParent().
+
+    Args:
+        doc: FreeCAD document object. If None, uses ActiveDocument.
+             Note: This is used only for validation - the TreeView widget
+             determines which document is actually traversed.
+
+    Returns:
+        dict: Mapping of {parent_label: [child_labels]}. The special key
+              'ROOT' contains top-level objects in the document.
+
+    Raises:
+        ValueError: If no document is available or TreeView access fails.
+        RuntimeError: If TreeView widget cannot be found or accessed.
+    """
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
+    if not doc:
+        raise ValueError("No FreeCAD document available")
+
+    try:
+        # Access the TreeView widget through FreeCAD's main window
+        tree_widget = Gui.getMainWindow().findChildren(QtGui.QTreeWidget)[0]
+        root = tree_widget.invisibleRootItem()
+
+        if root.childCount() == 0:
+            raise RuntimeError("TreeView widget appears empty")
+
+        # Find the document node (should be first child of root)
+        doc_node = root.child(0)
+        if not doc_node:
+            raise RuntimeError("Cannot find document node in TreeView")
+
+        tree = {None: []}
+
+        def collect_tree_recursive(tree_item, parent_label):
+            """Recursively collect TreeView structure."""
+            if tree_item is None:
+                return
+
+            item_label = tree_item.text(0)
+
+            # Add this item to parent's children list
+            if parent_label not in tree:
+                tree[parent_label] = []
+            tree[parent_label].append(item_label)
+
+            # Initialize this item's children list
+            if item_label not in tree:
+                tree[item_label] = []
+
+            # Check if we should stop recursion at this object
+            fcobjs = doc.getObjectsByLabel(item_label)
+            fcobj = fcobjs[0] if fcobjs else None
+            if fcobj and stop_treeview_recursion(fcobj):
+                # Include this object but don't recurse into its TreeView
+                # children
+                return
+
+            # Process all children recursively
+            for i in range(tree_item.childCount()):
+                child_item = tree_item.child(i)
+                collect_tree_recursive(child_item, item_label)
+
+        # Process all top-level items in the document
+        for i in range(doc_node.childCount()):
+            item = doc_node.child(i)
+            collect_tree_recursive(item, None)
+
+        return tree
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to access TreeView widget: {e}")
+
+
+def stop_treeview_recursion(fcobj):
+    """Determine if TreeView recursion should stop at this FreeCAD object.
+
+    This prevents TreeView from expanding Link descendants that would cause
+    duplicate parent assignments. Links themselves are included in the tree,
+    but their TreeView children are skipped since they're actually children
+    of the LinkedObject that will be processed naturally during traversal.
+
+    It may seem strange that we choose NOT to include these objects here,
+    and then we effecitvely rebuild them later with the link wrapper
+    descendents.  Lets call that an artifact of history.  I implemented
+    the getParent-based tree first, which DID NOT provide these
+    duplicates.  Then I disovered that the getParent approach wasn't
+    always right.  Here we are.
+
+    Args:
+        fcobj: FreeCAD object to test
+
+    Returns:
+        bool: True if recursion should stop, False if recursion should
+        continue
+    """
+    if not fcobj:
+        return False
+
+    # Get object properties for decision making
+    typeid = getattr(fcobj, 'TypeId', '')
+    linked_obj = getattr(fcobj, 'LinkedObject', None)
+    element_count = getattr(fcobj, 'ElementCount', 0)
+
+    if False:
+        debug(
+            f"DEBUG: stop_treeview_recursion({fcobj.Label}): "
+            f"typeid='{typeid}', "
+            f"LinkedObject={linked_obj.Label if linked_obj else None}, "
+            f"ElementCount={element_count}")
+
+    # Stop recursion for regular Links (App::Link with LinkedObject)
+    if typeid == 'App::Link' and linked_obj:
+        if False:
+            debug(
+                f"DEBUG: Stopping recursion at Link {fcobj.Label} -> "
+                f"{linked_obj.Label}"
+        )
+        return True
+
+    # Continue recursion for all other objects (including Link arrays for
+    # now)
+    return False
+
+
+class FCObjectTree:
+    """Copy the FreeCAD object tree and manipulate the copy
+
+    Most of the "logic" is handled in this class, including:
+      - handling of properties, including
+        - "default" properties (assumed based on object type)
+        - internal properties (passed down the tree implicitly)
+      - selection of which objects to export (based on properties,
+        selection, etc.))
+    """
+
+    def __init__(self, doc=None, object_class=None):
+        if object_class is not None:
+            self.object_class = object_class
+        else:
+            self.object_class = FCObjectWrapper
+
+        if doc is not None:
+            self.doc = doc
+        else:
+            self.doc = FreeCAD.ActiveDocument
+        self.objects = {}
+
+        # Build list of selected objects at initialization
+        try:
+            import FreeCADGui as Gui
+            self.selected = [
+                obj.Label for obj in Gui.Selection.getSelection()
+            ]
+            if DEBUG and self.selected:
+                log(f"Selected objects at tree init: {self.selected}")
+        except ImportError:
+            # Handle case where GUI is not available (headless mode)
+            self.selected = []
+        self._load()
+        self._create_link_wrappers()  # expand the tree for links
+        self._prune_non_printable()  # remove axes, sketches, etc.
+        self._internal_props()  # generate and propagete properties
+        if DEBUG:
+            compact_tree = self.print_compact_tree(return_string=True)
+            debug("Compact object tree:\n" + compact_tree)
+            tree_output = self.print_tree(True, return_string=True)
+            debug("Object tree with properties:\n" + tree_output)
+
+    def _wrap_document_objects(self):
+        """Wrap all FreeCAD objects in FCObjectWrapper instances."""
+        self.objects[None] = self.object_class(None)
+
+        for fcobj in self.doc.Objects:
+            try:
+                ow = self.object_class(fcobj)  # Auto-detects Links now
+                if ow.label in self.objects:
+                    warn(f"Duplicate label found: {ow.label}")
+                self.objects[ow.label] = ow
+            except Exception as e:
+                obj_label = getattr(fcobj, 'Label', 'UNKNOWN')
+                print(f"ERROR: Failed to wrap object {obj_label}: {e}")
+
+    def _build_parent_child_relationships(self):
+        """Create parent-child relationships using TreeView structure."""
+        tree = get_document_tree_treeview(self.doc)
+
+        for parent_key, children_labels in tree.items():
+            self._process_parent_children(parent_key, children_labels)
+
+    def _process_parent_children(self, parent_key, children_labels):
+        """Process parent-child relationships for a specific parent."""
+
+        if parent_key in self.objects:
+            for child_label in children_labels:
+                if child_label in self.objects:
+                    # Set parent-child relationship for ALL objects
+                    self.objects[parent_key].children.append(child_label)
+                    self.objects[child_label].parent = parent_key
+
+    def _load(self):
+        """populate self.objects with {label: FCObjectWrapper(fcobj)}
+        and then complete 'children' lists within each wrapper object
+
+        Notes:
+          - the "None" key in self.objects points to the "ROOT"
+            object, which isn't a real object, just a meta-object
+            whose "children" are the top-level objects
+          - this tree DOES NOT use logical dependencies (inList &
+            outList).  It only uses the nesting of the treeview.
+        """
+
+        # Phase 1: Wrap all FreeCAD objects
+        self._wrap_document_objects()
+
+        # Phase 2: Build parent-child relationships from TreeView
+        self._build_parent_child_relationships()
+
+    def _create_link_wrappers(self):
+        """Create descendents for Link wrappers."""
+        # Links are now created correctly in _load(), just need
+        # descendents
+        # Take snapshot to avoid "dictionary changed size during iteration"
+        objects_snapshot = list(self.objects.items())
+        for label, ow in objects_snapshot:
+            is_descendant = getattr(ow, 'is_link_descendant', False)
+            if ow and ow.link:
+                if not is_descendant:
+                    self._create_link_descendents(label)
+
+    ####################################################################
+    # Helper Methods for Link handling and Tree Expansion
+    def _dereference_link_chain(self, fcobj):
+        """Follow Link chain to final destination object.
+
+        Handles nested Links (Link->Link->Body) by following the chain
+        until we reach a non-Link object.
+
+        Args:
+            fcobj: FreeCAD object to dereference
+
+        Returns:
+            Final linked FreeCAD object (non-Link)
+        """
+        visited = set()
+        current = fcobj
+
+        while (hasattr(current, 'LinkedObject') and current.LinkedObject
+               and current.Label not in visited):
+            visited.add(current.Label)
+            current = current.LinkedObject
+
+        return current
+
+    def _is_link(self, ow):
+        """Check if wrapper represents a Link object."""
+        return ow and ow.link and hasattr(ow.fcobj, 'LinkedObject')
+
+    def _is_array(self, ow):
+        """Check if Link is a Link Array (multiple elements)."""
+        return hasattr(ow.fcobj,
+                       'ElementCount') and ow.fcobj.ElementCount > 1
+
+    def _get_array_elements(self, ow):
+        """Get list of array element labels for a Link Array."""
+        array_elements = []
+        for i in range(ow.fcobj.ElementCount):
+            # Pattern: Cube002 -> Link002_i0, Link002_i1, etc.
+            element_label = f"Link{ow.label[4:]}_i{i}"
+            if element_label in self.objects:
+                array_elements.append(element_label)
+        return array_elements
+
+    def _create_link_descendents(self, link_label):
+        """Create descendant wrappers for a Link wrapper.
+
+        Orchestrates creation of both virtual descendants and Link Array
+        handling.
+
+        Args:
+            link_label: Label of Link wrapper to create descendants for
+        """
+        self._create_virtual_descendants(link_label)
+        self._handle_link_array_elements(link_label)
+
+    def _create_virtual_descendants(self, link_label):
+        """Create virtual descendants representing the linked object's
+        children.
+
+        Creates virtual wrapper objects with dot notation (e.g.,
+        "Link001.Sketch", "Link001.Pad") that simulate what the Link's
+        internal structure would look like if expanded.
+
+        Args:
+            link_label: Label of Link wrapper to create virtual
+            descendants for
+
+        Side Effects:
+            - Creates virtual descendants via _create_linked_subtree
+        """
+        link_wrapper = self.objects[link_label]
+        linked_obj = link_wrapper.link
+
+        if not linked_obj or linked_obj.Label not in self.objects:
+            return  # Linked object not found
+
+        original_wrapper = self.objects[linked_obj.Label]
+
+        self._create_linked_subtree(link_wrapper, original_wrapper,
+                                    link_label)
+
+    def _handle_link_array_elements(self, link_label):
+        """Reparent Link Array elements as children of the Link wrapper.
+
+        For Link Arrays (e.g., Link002), finds array elements (Link002_i0,
+        Link002_i1) and reparents them to be children of the main Link
+        wrapper in the tree structure.
+
+        Args:
+            link_label: Label of Link wrapper to handle array elements for
+
+        Side Effects:
+            - Reparents array elements as Link children
+            - Updates parent/child relationships in wrapper tree
+        """
+        link_wrapper = self.objects[link_label]
+
+        if not self._is_array(link_wrapper):
+            return  # Not a Link Array, nothing to do
+
+        array_elements = self._get_array_elements(link_wrapper)
+        for element_label in array_elements:
+            if element_label not in self.objects:
+                continue  # Skip missing array elements
+
+            element_wrapper = self.objects[element_label]
+
+            # Remove from current parent's children list
+            if (element_wrapper.parent
+                    and element_wrapper.parent in self.objects):
+                current_parent = self.objects[element_wrapper.parent]
+                current_parent.children.remove(element_label)
+
+            # Reparent to Link wrapper
+            element_wrapper.parent = link_wrapper.label
+            link_wrapper.children.append(element_label)
+
+    def _create_linked_subtree(self, link_wrapper, original_wrapper,
+                               prefix):
+        """Create virtual descendants for all children of a linked object.
+
+        Creates virtual wrapper objects that simulate what the Link's
+        children would look like, named with dot notation (e.g.,
+        "Link001.Sketch").
+
+        Args:
+            link_wrapper: Parent Link wrapper to add virtual children to
+            original_wrapper: Original object whose children to mirror
+            prefix: Naming prefix for virtual children (e.g., "Link001")
+
+        Side Effects:
+            - Adds virtual wrappers to self.objects with dotted names
+            - Adds child labels to link_wrapper.children
+            - Sets parent relationships on virtual wrappers
+        """
+        if not original_wrapper.children:
+            return  # No children to process
+
+        for child_label in original_wrapper.children:
+            if child_label not in self.objects:
+                continue  # Skip missing children
+
+            original_child = self.objects[child_label]
+            virtual_label = f"{prefix}.{child_label}"
+
+            # Handle Link children: use clean linked object instead of
+            # processed Link wrapper
+            if (hasattr(original_child.fcobj, 'LinkedObject')
+                    and original_child.fcobj.LinkedObject):
+                # This child is a Link - use its clean linked object for
+                # recursion
+                linked_obj = original_child.fcobj.LinkedObject
+                if linked_obj.Label in self.objects:
+                    clean_wrapper = self.objects[linked_obj.Label]
+                    # Create virtual Link descendant that will recurse
+                    # with clean data
+                    final_linked_obj = self._dereference_link_chain(
+                        original_child.fcobj)
+                    virtual_child = self.object_class(
+                        fcobj=original_child.fcobj, link=final_linked_obj)
+                    virtual_child.parent = link_wrapper.label
+                    virtual_child.is_link_descendant = True
+
+                    # Add to tree structure
+                    self.objects[virtual_label] = virtual_child
+                    link_wrapper.children.append(virtual_label)
+
+                    # Recursively create descendants using CLEAN linked
+                    # object wrapper
+                    if clean_wrapper.children:
+                        self._create_linked_subtree(virtual_child,
+                                                    clean_wrapper,
+                                                    virtual_label)
+                continue  # Skip normal processing for Link children
+
+            # Create normal (non-Link) descendant wrapper
+            final_linked_obj = self._dereference_link_chain(
+                original_child.fcobj)
+            virtual_child = self.object_class(fcobj=original_child.fcobj,
+                                              link=final_linked_obj)
+            virtual_child.parent = link_wrapper.label
+            # Flag to prevent double Link processing
+            virtual_child.is_link_descendant = True
+
+            # Add to tree structure
+            self.objects[virtual_label] = virtual_child
+            link_wrapper.children.append(virtual_label)
+
+            # Recursively create virtual grandchildren
+            if original_child.children:
+                self._create_linked_subtree(virtual_child, original_child,
+                                            virtual_label)
+
+    ## end of helpers for Link management and Tree Expansion
+    ##################################################################
+
+    def _prune_non_printable(self):
+        # Prune Origin objects, axes, planes, and Assembly
+        # infrastructure
+        pruned_typeids = [
+            'Assembly::JointGroup', 'App::VarSet', 'PartDesign::Plane'
+        ]
+        prune_objects = []
+        for k, v in self.objects.items():
+            if k is None:
+                continue  # don't prune root
+            if 'Origin' in k or \
+               k.endswith('-axis') or \
+               k.endswith('-plane') or \
+               v.typeid in pruned_typeids or \
+               v.typeid.startswith('Sketcher::'):
+                prune_objects.append(k)
+        self.prune(prune_objects)
+
+    def _internal_props(self):
+        """Create and manage intenal properties.  These are NOT
+        placed in the FreeCAD objects themselves, but only managed
+        here in the wrapper objects.  If the user defines them in the
+        FreeCAD object, then that will override the behavior and be
+        further inherited.  The internal properties are:
+           - ExportShape - (bool) export object's .Shape
+           - ExportContainer - (bool) export as container
+           - ExportName - (str)  name to use in export path
+           - ExportPath - (str) full export path
+           - Export     - (bool) whether to export it
+        Slicer properties will also be inherited internally, but not
+        explicitly used by this macro.  That is, if the user sets
+        "extruder" in a FreeCAD Group, then the sub-objects will
+        inherit that.
+        """
+        # these will be defined/derived for each object, and are not
+        # inherited.
+        not_inherited = ('ExportShape', 'ExportContainer', 'ExportName',
+                         'ExportPath')
+
+        def _iprop(o, parent_props, so=self.objects):
+            # o = object wrapper
+            # recursive operation
+            # we'll apply these in reverse priority
+
+            # PHASE 1: Inherit Parent Props (unified for Link and non-Link
+            # objects)
+            if not hasattr(o, 'iprop'):
+                o.iprop = {}
+
+            # LinkTreePriority is document-level only to avoid circular
+            # dependency
+            link_tree_priority = getattr(self.doc, 'LinkTreePriority',
+                                         True)
+
+            for key, parent_value in parent_props.items():
+                if key not in not_inherited:
+                    if link_tree_priority:
+                        o.iprop[key] = parent_value  # Tree parent wins
+                    else:
+                        o.iprop.setdefault(
+                            key, parent_value)  # Existing (linked) wins
+
+            # PHASE 2: Apply Defaults
+            delimiter = getattr(self.doc, 'ExportDelimiter', '.')
+            # TODO OPTION: For Link wrapper children, could derive
+            # ExportName from linked object instead of wrapper label:
+            # if o.link:
+            #     o.iprop['ExportName'] = o.link.Label
+            # else:
+            #     o.iprop['ExportName'] = o.label.split(delimiter)[-1]
+            o.iprop['ExportName'] = o.label.split(delimiter)[-1]
+
+            # Auto-Export based on object Label
+            # should this happen before PHASE 1?  Appearing here,
+            # having Export in the Label will override a parent's
+            # explicit Export=False.  If we move this before Phase 1,
+            # then the reverse will be true.
+            aep = getattr(self.doc, 'AutoExportPattern', '.*Export.*')
+            if re.search(aep, o.label or ''):
+                o.iprop['Export'] = True
+
+            # here is where the ExportContainer/ExportShape defaults
+            # are set.  There are FOUR possible configureations:
+            #  ExportContainer   ExportShape
+            #    False             True          shape like PartDesign Body
+            #    True              False         container like App::Part
+            #    True              True          ExportShape wins
+            #    False             False         not exportable
+
+            # Set ExportContainer/ExportShape defaults
+            # For Link wrappers, use linked object properties for
+            # structural tests
+            if o.link:
+                eo = so.get(o.link.Label) if o.link else o
+            else:
+                eo = o
+
+            if (eo.has_shape and (eo.typeid.startswith('Part::')
+                                  or eo.typeid.startswith('PartDesign::'))):
+                # these are familiar solid geometry
+                o.iprop['ExportContainer'] = False
+                o.iprop['ExportShape'] = True
+            elif (eo.typeid == "App::Part"
+                  and self._contains_multiple_shapes(eo)):  # Std::Part
+                o.iprop['ExportContainer'] = True
+                o.iprop['ExportShape'] = False
+                # Debug App::Part shape counting
+                if o.label in ['Cup001']:
+                    shape_children = [
+                        c for c in eo.children if self.objects[c].has_shape
+                    ]
+                    debug(f"App::Part {o.label} has "
+                          f"{len(shape_children)} shape children: "
+                          f"{shape_children}")
+            elif eo.typeid == "App::Part":
+                # Single shape App::Part
+                o.iprop['ExportContainer'] = False
+                o.iprop['ExportShape'] = True
+                if o.label in ['Cup001']:
+                    shape_children = [
+                        c for c in eo.children if self.objects[c].has_shape
+                    ]
+                    debug(f"App::Part {o.label} all children: "
+                          f"{eo.children}")
+                    debug(f"App::Part {o.label} (single shape) has "
+                          f"{len(shape_children)} shape children: "
+                          f"{shape_children}")
+            elif (eo.klass in ('Group', 'Assembly', 'DocumentObjectGroup',
+                               'AssemblyObject')
+                  or (eo.typeid and eo.typeid.startswith('Assembly::'))):
+                # Groups, Assemblies, and Assembly-related objects are
+                # organizational containers
+                o.iprop['ExportContainer'] = False
+                o.iprop['ExportShape'] = False
+
+                # Assembly placement behavior - check document default,
+                # fall back to True
+                if o.typeid.startswith('Assembly::'):
+                    doc_default = getattr(self.doc,
+                                          'IgnoreAssemblyPlacement', True)
+                    o.iprop['IgnoreAssemblyPlacement'] = doc_default
+
+            # Check if object should be excluded because parent exports as
+            # shape
+            if o.parent and o.parent in so:  # so = self.objects
+                parent_obj = so[o.parent]
+                # Exclude Link array elements (App::LinkElement)
+                # when parent Link has shape
+
+                # DO WE STILL NEED THIS?  XXX  We may not with tree
+                # link expansion happening earlier.
+                if (parent_obj.has_shape
+                        and parent_obj.typeid != "App::Part"
+                        and o.typeid == "App::LinkElement"):
+                    o.iprop['ExportContainer'] = False
+                    o.iprop['ExportShape'] = False
+                    debug(f"EXCLUDE LINK ELEMENT: {o.label} "
+                          f"excluded (parent {parent_obj.label} "
+                          f"has shape, this is LinkElement)")
+
+            # PHASE 3: Apply any EXPLICITLY SET (in FreeCAD) values
+            # for THIS object (not parents)
+            o.iprop.update(o.prop)
+
+            # PHASE 4: ExportPath derivation moved to separate two-pass
+            # approach
+            # ExportPath will be derived in _derive_export_paths() after
+            # complete tree traversal, when all
+            # ExportContainer/ExportShape flags are known
+
+            # Console warning for conflicting properties
+            if (o.iprop.get('ExportShape')
+                    and o.iprop.get('ExportContainer')):
+                warn(f"Object '{o.label}' has both " +
+                     f"ExportShape=True and ExportContainer=True. " +
+                     f"ExportShape takes priority.")
+
+            # now recurse through all of the children
+            for clabel in o.children:
+                _iprop(so[clabel], o.iprop)
+
+        ## End of _iprop recursive function
+        ##############################################################
+
+        for label, ow in self.objects.items():  # ow = object wrapper
+            if ow and not ow.parent:  # start at the non-ROOT top
+                _iprop(ow, {})
+
+        # PASS 2: Now that all ExportContainer/ExportShape flags are set,
+        # derive ExportPath values using boundary rules
+        self._derive_export_paths()
+
+    #################################################################
+    ## Helpers for _internal_props
+    def _contains_multiple_shapes(self, obj_wrapper):
+        """Check if object contains multiple child objects with shapes.
+
+        Used to determine if App::Part should be treated as
+        ExportContainer.
+        """
+        shape_count = 0
+        for child_label in obj_wrapper.children:
+            child = self.objects[child_label]
+            if child.has_shape:
+                shape_count += 1
+                if shape_count > 1:
+                    return True
+        return False
+
+    def _has_export_container_descendant(self, obj_wrapper):
+        """Check if object has any ExportContainer=true descendants in its
+        subtree.
+
+        Args:
+            obj_wrapper: FCObjectWrapper to check
+
+        Returns:
+            bool: True if object or any descendant has ExportContainer=true
+        """
+        # Check this object first
+        if hasattr(obj_wrapper, 'iprop') and obj_wrapper.iprop.get(
+                'ExportContainer', False):
+            return True
+
+        # Recursively check children
+        if hasattr(obj_wrapper, 'children'):
+            for child_label in obj_wrapper.children:
+                child_wrapper = self.objects.get(child_label)
+                if child_wrapper and self._has_export_container_descendant(
+                        child_wrapper):
+                    return True
+
+        return False
+
+    def _build_export_path(self, obj_wrapper):
+        """Build hierarchical export path by walking up container chain.
+
+        Walks up the tree collecting ExportName from objects that have
+        ExportContainer=True or ExportShape=True, creating paths like
+        "Assembly.Part.Volume".
+        """
+        # XXX Clean this up
+        path_parts = []
+        current = obj_wrapper
+        visited = set()  # Prevent infinite loops
+        delimiter = getattr(self.doc, 'ExportDelimiter', '.')
+
+        while current and hasattr(current, 'label') and current.label \
+              and current.label not in visited:
+            visited.add(current.label)
+            # Only add to path if this is a container OR
+            #      this is the target object itself
+            if hasattr(current, 'iprop'):
+                is_container = current.iprop.get('ExportContainer', False)
+                is_target = current == obj_wrapper and \
+                    current.iprop.get('ExportShape', False)
+
+                if is_container or is_target:
+                    export_name = current.iprop.get('ExportName',
+                                                    current.label) \
+                                                    or current.label
+                    path_parts.insert(0, export_name)
+
+            if not hasattr(current, 'parent') or current.parent is None:
+                # Reached root
+                break
+            current = self.objects.get(current.parent)
+            if not current:
+                break
+
+        if path_parts:
+            ret = delimiter.join(path_parts)
+        else:
+            ret = getattr(obj_wrapper, 'label', 'UNKNOWN')
+        return ret
+
+    def _derive_export_paths(self):
+        """PASS 2: Derive ExportPath values using prefix-based algorithm.
+
+        This runs after the complete tree traversal when all
+        ExportContainer/ExportShape flags are known. Uses prefix logic:
+        - Start with prefix=None
+        - Append ExportName to prefix when: ExportContainer OR
+          prefix!=None OR ExportShape
+        - Stop recursion at ExportShape objects (don't process their
+          children)
+        """
+
+        def _derive_paths_recursive(obj_wrapper, prefix=None):
+            # Check if we should set ExportPath for this object
+            is_export_container = obj_wrapper.iprop.get(
+                'ExportContainer', False)
+            is_export_shape = obj_wrapper.iprop.get('ExportShape', False)
+            should_export = is_export_container or (
+                prefix is not None) or is_export_shape
+
+            if should_export:
+                # Get delimiter from document
+                delimiter = getattr(self.doc, 'ExportDelimiter', '.')
+                
+                # Build the new prefix/path
+                if prefix is None:
+                    new_path = obj_wrapper.iprop.get('ExportName',
+                                                     obj_wrapper.label)
+                else:
+                    export_name = obj_wrapper.iprop.get(
+                        'ExportName', obj_wrapper.label)
+                    new_path = f"{prefix}{delimiter}{export_name}"
+
+                # Set ExportPath for this object (only if not explicitly set)
+                if 'ExportPath' not in obj_wrapper.prop:
+                    obj_wrapper.iprop['ExportPath'] = new_path
+
+                # Update prefix for children (unless this is an
+                # ExportShape)
+                if is_export_shape:
+                    # ExportShape stops recursion - don't process children
+                    return
+                else:
+                    # Continue with this path as the new prefix
+                    new_prefix = new_path
+            else:
+                # Don't set ExportPath, continue with existing prefix
+                new_prefix = prefix
+
+            # Recurse to children
+            for child_label in obj_wrapper.children:
+                child_wrapper = self.objects.get(child_label)
+                if child_wrapper:
+                    _derive_paths_recursive(child_wrapper, new_prefix)
+
+        # Debug tree structure - show paths to Hex children
+        def print_tree_to_hex_children(obj_wrapper, path="",
+                                       visited=None):
+            if visited is None:
+                visited = set()
+            if obj_wrapper.label in visited:
+                return
+            visited.add(obj_wrapper.label)
+
+            current_path = f"{path}.{obj_wrapper.label}" \
+                if path else obj_wrapper.label
+
+
+            # Recurse to children
+            for child_label in obj_wrapper.children:
+                child_wrapper = self.objects.get(child_label)
+                if child_wrapper:
+                    print_tree_to_hex_children(child_wrapper, current_path,
+                                               visited)
+
+
+        # Start from all root objects with prefix=None
+        root_objects = []
+        for label, ow in self.objects.items():
+            if ow and not ow.parent:
+                root_objects.append(label)
+
+        for label, ow in self.objects.items():
+            if ow and not ow.parent:
+                _derive_paths_recursive(ow, prefix=None)
+
+    ## End Helpers for _internal_props
+    ##################################################################
+
+    def get_export_set(self):
+        """Get final set of objects to export.
+
+        Orchestrates the complete export selection and expansion process:
+        1. Get initial selection (Export=True or explicit user selection
+           in the Tree View)
+        2. Apply Link wrapper disambiguation to resolve conflicts
+        3. Iteratively expand containers until stable
+        4. Remove ineligible objects (below final shape)
+        5. Report changes for debugging
+
+        Returns:
+            set: Final set of object labels to export
+        """
+        self.checkpoint(
+            "initial_tree",
+            "Tree after initial construction and Link wrapper creation")
+
+        initial_selection = self._get_initial_selection()
+        self.checkpoint("initial_selection",
+                        "Objects selected for export before "
+                        "disambiguation",
+                        data={"selection": initial_selection})
+
+        disambiguated_selection = self._apply_link_disambiguation(
+            initial_selection)
+        self.checkpoint("after_disambiguation",
+                        "After Link wrapper user intent disambiguation",
+                        data={"selection": disambiguated_selection})
+
+        expanded_selection = self._expand_containers(
+            disambiguated_selection)
+        self.checkpoint("after_expansion",
+                        "After container expansion and Link cleanup",
+                        data={"selection": expanded_selection})
+        log(f"Initial export list: {sorted(expanded_selection)}")
+
+        # Filter out objects with empty ExportPath (boundary rule exclusions)
+        eligible_export_set = {
+            label for label in expanded_selection  if label in self.objects
+              and self.objects[label].iprop.get('ExportPath', '')
+        }
+
+        if len(eligible_export_set) != len(expanded_selection):
+            excluded = set(expanded_selection) - eligible_export_set
+            log(
+                f"Excluded objects with empty ExportPath: {sorted(excluded)}"
+            )
+        log(f"Eligible export list: {sorted(eligible_export_set)}")
+
+        self._report_export_changes(initial_selection, eligible_export_set)
+        return set(eligible_export_set)
+
+    def _get_initial_selection(self):
+        """Get initial export set from TreeView selection or Export=True
+        properties.
+
+        Returns:
+            list: Object labels for initial export consideration
+        """
+        # Check for TreeView selection override
+        selected = self.get_selected()
+        if selected:
+            debug("Using selection override:", selected)
+
+            # Force export paths for selected objects without one
+            for label in selected:
+                wrapper = self.objects.get(label)
+                if wrapper and not wrapper.iprop.get('ExportPath'):
+                    # Check if object has printable shape
+                    if (hasattr(wrapper.fcobj, 'Shape')
+                            and wrapper.fcobj.Shape.isValid()
+                            and wrapper.fcobj.Shape.Volume > 0):
+                        wrapper.iprop['ExportPath'] = wrapper.label
+                        debug(
+                            f"FORCE EXPORT: Assigned ExportPath="
+                            f"'{wrapper.label}' to selected object {label}"
+                        )
+
+            return selected
+
+        # Find objects with Export=True property
+        export_objects = []
+        debug(f"Starting with {len(self.objects.keys())} objects:",
+                pformat(list(self.objects.keys())))
+
+        for label, wrapper in self.objects.items():
+            if label is None:  # Skip root
+                continue
+            if wrapper.iprop.get('Export', False):
+                export_objects.append(label)
+        return export_objects
+
+    def _apply_link_disambiguation(self, export_objects):
+        """Apply user intent disambiguation for Link wrapper children.
+
+        When the same FreeCAD object appears in multiple wrapper paths,
+        Link wrapper children are excluded if their Link parent lacks
+        Export=True. This assumes the user intended to export through a
+        different path.
+
+        Args:
+            export_objects: List of object labels with Export=True
+
+        Returns:
+            list: Object labels after disambiguation
+        """
+        result = self._remove_branch_duplication(export_objects)
+        log(f"After branch duplicate removal: {len(result)} objects:",
+                pformat(result))
+        return result
+
+    def _expand_containers(self, export_objects):
+        """Iteratively expand containers until selection is stable.
+
+        Applies container expansion rules repeatedly until no more changes
+        occur:
+        - Remove Link descendants when parent exports as shape
+        - Replace FALSE/FALSE containers with their exported children
+        - Add children of ExportContainer=True objects
+
+        Args:
+            export_objects: List of object labels to expand
+
+        Returns:
+            list: Final expanded object labels
+        """
+        current_set = set(export_objects)
+        iteration = 1
+
+        while True:
+            debug(f'Export list cleanup - iteration {iteration}')
+            previous_set = current_set.copy()
+
+            current_set = self._clean_link_descendants(current_set)
+            current_set = self._expand_organizational_containers(
+                current_set)
+            current_set = self._expand_export_containers(current_set)
+
+            result_list = sorted(list(current_set))
+            debug('Cleaning Results:', pformat(result_list))
+
+            if current_set == previous_set:
+                break  # Stable - no more changes
+            iteration += 1
+
+        return result_list
+
+    def _report_export_changes(self, initial_selection, final_selection):
+        """Report what objects were added/removed during export processing.
+
+        Args:
+            initial_selection: Original object labels
+            final_selection: Final object labels after expansion
+        """
+        initial_set = set(initial_selection)
+        final_set = set(final_selection)
+
+        if final_set == initial_set:
+            debug("No change from list cleanup.")
+        else:
+            log(f"Final export list ({len(final_selection)}):",
+                    pformat(final_selection))
+            added = final_set - initial_set
+            removed = initial_set - final_set
+            if added:
+                log("Added objects:", pformat(sorted(list(added))))
+            if removed:
+                log("Removed objects::", pformat(sorted(list(removed))))
+
+    def _remove_branch_duplication(self, export_objects):
+        """Remove Branch Duplication for Link wrapper children.
+
+        When the same FreeCAD object appears in multiple wrapper paths and
+        has Export=true, Link wrapper children are excluded if their Link
+        parent does NOT have Export=true. This assumes the user intended
+        to export the object through a different (non-Link) path rather
+        than as part of a Link subtree.
+
+        Args:
+            export_objects: List of object labels with Export=True
+
+        Returns:
+            List of object labels after disambiguation
+        """
+        result = []
+        removed = []
+
+        for label in export_objects:
+            obj = self.objects.get(label)
+            if not obj:
+                result.append(label)  # Keep if object not found
+                continue
+
+            # Check if this is a Link wrapper child (NOT the root Link
+            # wrapper) A Link wrapper child has a Link parent (nested Link
+            # situation)
+            is_link_child = (obj.link and obj.parent
+                             and self.objects.get(obj.parent)
+                             and self.objects.get(obj.parent).link)
+
+            if is_link_child:
+                # The immediate parent should be the Link wrapper root to
+                # check
+                parent = self.objects.get(obj.parent)
+
+                # Check if Link wrapper parent has Export=True
+                link_parent_exports = (parent and parent.iprop.get(
+                    'Export', False))
+
+                if not link_parent_exports:
+                    # Parent Link doesn't export - assume user wants
+                    # different path
+                    removed.append(label)
+                    debug(
+                        f"BRANCH DUPLICATE REMOVAL: Excluding {label} "
+                        f"(Link child, parent "
+                        f"{parent.label if parent else 'None'} "
+                        f"not exported)")
+                    continue
+
+            result.append(label)
+
+        if removed:
+            debug(f"Removed {len(removed)} Link wrapper children: "
+                    f"{removed}")
+
+        return result
+
+    def _find_all_link_descendants(self, link_wrapper, export_set):
+        """Find all descendants of a Link wrapper across all wrapper
+        paths.
+
+        Uses comprehensive search to find ALL representations of Link
+        descendants, regardless of wrapper path, similar to
+        _remove_branch_duplication logic.
+
+        Args:
+            link_wrapper: FCObjectWrapper for the Link object
+            export_set: Set of object labels currently in export
+
+        Returns:
+            List of descendant labels to remove
+        """
+        descendants = []
+        link_label = link_wrapper.label
+
+        # Get the underlying linked object for pattern matching
+        if hasattr(link_wrapper.link, 'Label'):
+            linked_obj_label = link_wrapper.link.Label
+        else:
+            linked_obj_label = str(link_wrapper.link)
+
+        debug(
+            f"DEBUG LINK CLEANUP: Looking for descendants of "
+            f"link_label='{link_label}', "
+            f"linked_obj_label='{linked_obj_label}'"
+        )
+        debug(f"DEBUG LINK CLEANUP: Export set: {list(export_set)}")
+
+        for export_item in export_set:
+            if export_item == link_label:
+                continue  # Don't remove the Link itself
+
+            # Direct descendants: Link001.Pad, Link001.Groove
+            if export_item.startswith(link_label + '.'):
+                debug(
+                    f"DEBUG LINK CLEANUP: Found direct "
+                    f"descendant: {export_item}"
+                )
+                descendants.append(export_item)
+                continue
+
+            # Virtual descendants from other wrapper paths
+            # Pattern: Container001.Link001.Link001.Pad should match
+            # because it represents the same underlying Link descendants,
+            # just through a different wrapper path Look for the Link
+            # label appearing in the path but not as the start
+            if (link_label in export_item
+                    and not export_item.startswith(link_label + '.')
+                    and export_item != link_label):
+                debug(
+                    f"DEBUG LINK CLEANUP: Found virtual descendant: "
+                    f"{export_item}"
+                )
+                descendants.append(export_item)
+            else:
+                debug(
+                    f"DEBUG LINK CLEANUP: Skipped {export_item} "
+                    f"(no match)")
+
+        debug(
+            f"DEBUG LINK CLEANUP: Final descendants list: {descendants}")
+
+        return descendants
+
+    def _clean_link_descendants(self, export_set):
+        """Apply Link consolidation rules to export set.
+
+        Unified rules engine for Link descendant cleanup:
+        - Rule 1: Link has Export=True + ExportShape=True -> consolidate
+          to Link only
+        - Future rules can be added here
+
+        Args:
+            export_set: Set of object labels currently selected for export
+
+        Returns:
+            set: Updated export set after Link descendant cleanup
+        """
+        to_remove = []
+
+        for label, wrapper in self.objects.items():
+            if (label in export_set and wrapper.typeid == 'App::Link'
+                    and wrapper.link):
+
+                # Rule 1: Link has Export=True + ExportShape=True ->
+                # consolidate
+                if (wrapper.iprop.get('Export', False)
+                        and wrapper.iprop.get('ExportShape', False)):
+
+                    descendants = self._find_all_link_descendants(
+                        wrapper, export_set)
+                    to_remove.extend(descendants)
+
+                    if descendants:
+                        debug(
+                            f"LINK CLEANUP: {label} removed link "
+                            f"descendents: {descendants}"
+                        )
+
+        # Remove from export set only (keep wrapper tree intact)
+        return export_set - set(to_remove)
+
+    def _expand_organizational_containers(self, export_set):
+        """Replace organizational containers with their exported children.
+
+        Containers with both ExportContainer=False and ExportShape=False
+        are organizational only. They get replaced by their children that
+        have Export=True.
+
+        Args:
+            export_set: Set of object labels currently selected for export
+
+        Returns:
+            set: Updated export set with organizational containers
+            expanded
+        """
+        result_set = export_set.copy()
+
+        for label, wrapper in self.objects.items():
+            if label not in result_set:
+                continue  # Already removed
+
+            # Find children with Export=True
+            exported_children = [
+                child for child in wrapper.children
+                if self.objects[child].iprop.get('Export', False)
+            ]
+
+            # Check if this is an organizational container
+            is_organizational = (
+                wrapper.iprop.get('ExportContainer', False) is False
+                and wrapper.iprop.get('ExportShape', False) is False)
+
+            if is_organizational:
+                # Replace organizational container with its exported
+                # children
+                debug(
+                    f"FALSE/FALSE: {label} --> "
+                    f"{''.join(exported_children)}"
+                )
+                result_set.discard(label)
+                result_set.update(exported_children)
+            elif not wrapper.has_shape:
+                # Shapeless objects also get replaced with their children
+                debug(
+                    f"NO SHAPE: {label} --> {' '.join(exported_children)}")
+                result_set.discard(label)
+                result_set.update(exported_children)
+
+        return result_set
+
+    def _expand_export_containers(self, export_set):
+        """Add children to ExportContainer=True objects.
+
+        Objects with ExportContainer=True keep themselves in the export
+        but also add their exported children. For Link wrappers, use
+        wrapper children.
+
+        Args:
+            export_set: Set of object labels currently selected for export
+
+        Returns:
+            set: Updated export set with container children added
+        """
+        result_set = export_set.copy()
+
+        for label, wrapper in self.objects.items():
+            if label not in result_set:
+                continue  # Not in current export set
+
+            # Always add children with Export=True (ensures container
+            # children export)
+            exported_children = [
+                child for child in wrapper.children
+                if self.objects[child].iprop.get('Export', False)
+            ]
+            result_set.update(exported_children)
+
+            # Special handling for ExportContainer=True
+            if wrapper.iprop.get('ExportContainer', False) is True:
+                if wrapper.link:
+                    # Link wrappers: add Link descendants still in export
+                    # set
+                    link_children = [
+                        child for child in wrapper.children
+                        if child.startswith(label +
+                                            '.') and child in result_set
+                    ]
+                    result_set.update(link_children)
+                    if link_children:
+                        debug(
+                            f"CONTAINER: {label} added link children "
+                            f"{link_children}"
+                        )
+                else:
+                    # Regular containers: add children with Export=True
+                    result_set.update(exported_children)
+                    if exported_children:
+                        debug(
+                            f"CONTAINER: {label} added children "
+                            f"{exported_children}"
+                        )
+
+        return result_set
+
+    def get_export_groups(self, export_set):
+        """Build final slicer object structure using ExportPath values.
+
+        Parses ExportPath properties to create the final object->volumes mapping
+        that will be written to the 3MF file:
+        - Multi-part paths (A.B.C) create container A with volume B.C
+        - Single-part paths (A) create direct objects with no volumes
+        - Direct objects are only included if they're not already containers
+
+        Args:
+            export_set: Set of object labels to export
+
+        Returns:
+            dict: maps container keys to shape keys
+        """
+
+        d = getattr(self.doc, 'ExportDelimiter', '.')
+        # map all keys to ExportPath values (split on delimiter)
+        epd = { k: self.objects[k].iprop['ExportPath'].split(d)
+              for k in export_set }
+        # reverse-sort by ExportPath in a tuple
+        ept = sorted(epd.items(), key=lambda kv: tuple(kv[1]))
+        ept.reverse()
+
+        result = {} # we'll stash our final structure here
+        v = [] # volume list
+        debug('BUILDING EXPORT GROUPS')
+        for k, p in ept:
+            debug(f"{k} -> {p}")
+            if not v: # starting a new container
+                v.append(k)
+            elif p[0] == epd[v[0]][0]: # still in same container
+                if len(p) == 1: # this is THE container object
+                    result[k] = v # stash it
+                    v = []         # start a new one
+                else: # continuing a container object
+                    v.append(k)
+            else:
+                # new container string but we left a previous
+                # container unfinished (we never hit the actual
+                # container object).  So we will just create one
+                #   obj -> obj
+                # mapping for each object.
+                for a in v:
+                    result[a] = [a]
+                v = [k]
+        if v:
+            for a in v:
+                result[a] = [a]
+
+        # Check for empty export (critical error)
+        if not result:
+            error("No Objects to Export",
+                  "No objects found to export.\n\n"
+                  "To export objects, you can:\n"
+                  "- Select objects in Tree View and run PrintFlow\n"
+                  "- Add 'Export' to object labels\n"
+                  "- Add Export=True property to objects")
+            return {}
+
+        return result
+
+
+    def _parse_export_path(self, label, delimiter='.'):
+        """Parse ExportPath into (container_name, volume_name) tuple.
+
+        Args:
+            label: Object label to parse ExportPath for
+            delimiter: Path delimiter (usually '.')
+
+        Returns:
+            tuple: (container_name, volume_name) where volume_name is None
+            for direct objects
+        """
+        wrapper = self.objects[label]
+        export_path = wrapper.iprop.get('ExportPath', label)
+        path_parts = export_path.split(delimiter)
+
+        if len(path_parts) > 1:
+            # Multi-part path: container.volume
+            container_name = path_parts[0]
+            volume_name = delimiter.join(path_parts[1:])
+            return container_name, volume_name
+        else:
+            # Single-part path: direct object
+            return path_parts[0], None
+
+    ######################################################################
+    ## General Helpers and Utilities
+
+    def has_selection(self):
+        """Return True if objects are selected in TreeView."""
+        return len(self.selected) > 0
+
+    def prune(self, labels, keep=False):
+        """Remove objects from tree by label.
+
+        Args:
+            labels: List of object labels to remove (or keep if keep=True)
+            keep: If True, remove everything EXCEPT the listed labels
+        """
+        if None in labels:
+            labels.remove(None)  # never prune ROOT
+        # invert behavior: keep the listed objects instead of
+        # removing them
+        if keep:
+            labels = list(set(self.objects.keys()) - set(labels))
+
+        # first remove the objects to be pruned
+        for k in labels:
+            del self.objects[k]
+        # then clean up links in remaining objects
+        for k, v in self.objects.items():
+            for u in labels:
+                if v.parent == u:
+                    v.parent = None
+                if u in v.children:
+                    v.children.remove(u)
+
+    def get_selected(self):
+        """Get labels of objects currently selected in FreeCAD
+        TreeView."""
+        return [k for k, v in self.objects.items() if v.selected]
+
+    ##################################################################
+    ## DEBUG and Display Methods
+    def checkpoint(self, label, desc=None, data=None):
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Temporarily remove _checkpoints to avoid recursive copying
+        _checkpoints_local = getattr(self, '_checkpoints', {})
+        if hasattr(self, '_checkpoints'):
+            del self._checkpoints
+
+        # Now safe to deepcopy without recursion
+        state = copy.deepcopy(self)
+
+        # Restore _checkpoints to original object
+        self._checkpoints = _checkpoints_local
+
+        # Store the checkpoint
+        cp = dict(label=label, state=state, data=data, timestamp=timestamp)
+        self._checkpoints[label] = cp
+
+    def __deepcopy__(self, memo):
+        """Custom deepcopy to exclude unpicklable FreeCAD document.
+
+        Creates a copy with FreeCAD document reference replaced by label.
+        """
+        import copy
+
+        # Create new instance without calling __init__
+        cls = self.__class__
+        new_obj = cls.__new__(cls)
+
+        # Copy all attributes except FreeCAD document
+        for key, value in self.__dict__.items():
+            if key == 'doc':
+                # Store just the document label instead of document object
+                new_obj.doc = value.Label if value else None
+            else:
+                # Deep copy other attributes normally (FCObjectWrapper has
+                # its own __deepcopy__)
+                new_obj.__dict__[key] = copy.deepcopy(value, memo)
+
+        return new_obj
+
+    def print_compact_tree(self, return_string=False):
+        """Print compact tree structure with CSEL flags and ExportPath.
+
+        Format: [C/-][S/-][E/-][L/-] ObjectName (ExportPath)
+        Where: C=Container, S=Shape, E=Export, L=LinkWrapper
+
+        Args:
+            return_string: If True, return string instead of printing
+        """
+
+        def get_color_code(ow):
+            """Get ANSI color code for object based on properties."""
+            if not ow:
+                return ''
+
+            # Color priority: Red (excluded) > Green (exported) >
+            # Yellow (links) > Blue (containers)
+            if ow.iprop.get('Export') is False:
+                return '\033[91m'  # Red
+            elif ow.iprop.get('Export') is True:
+                return '\033[92m'  # Green
+            elif ow.link:
+                return '\033[93m'  # Yellow
+            elif ow.iprop.get('ExportContainer') is True:
+                return '\033[94m'  # Blue
+            else:
+                return '\033[90m'  # Gray
+
+        def reset_color():
+            """Reset ANSI color."""
+            return '\033[0m'
+
+        def format_object_line(label, indent_level):
+            """Format single object line with CSEL flags and aligned ExportPath."""
+            ow = self.objects[label]
+
+            # Build CSEL flags
+            c_flag = 'C' if ow.iprop.get('ExportContainer') else '-'
+            s_flag = 'S' if ow.iprop.get('ExportShape') else '-'
+            e_flag = 'E' if ow.iprop.get('Export') else '-'
+            l_flag = 'L' if ow.link else '-'
+            flags = f"{c_flag}{s_flag}{e_flag}{l_flag}"
+
+            # Object name with indentation
+            indent = "  " * indent_level
+            color_start = get_color_code(ow)
+            color_end = reset_color() if color_start else ''
+            colored_name = f"{color_start}{label}{color_end}"
+            name_part = f"{flags}  {indent}{colored_name}"
+
+            # ExportPath aligned at column 40
+            export_path = ow.iprop.get('ExportPath', '')
+            if export_path:
+                # Calculate padding to align at column 40
+                current_length = len(flags) + 2 + len(indent) + len(label)
+                padding = max(1, 40 - current_length)
+                path_part = f"{' ' * padding}({export_path})"
+            else:
+                path_part = ""
+
+            return f"{name_part}{path_part}\n"
+
+        def build_tree_recursive(label, indent_level, lines):
+            """Recursively build tree lines."""
+            lines.append(format_object_line(label, indent_level))
+
+            ow = self.objects[label]
+            for child_label in ow.children:
+                build_tree_recursive(child_label, indent_level + 1, lines)
+
+        # Build the tree
+        lines = []
+        lines.append("CSEL  Object Tree (ExportPath)\n")
+        lines.append("=" * 60 + "\n")
+
+        for root_label in self.objects[None].children:
+            build_tree_recursive(root_label, 0, lines)
+
+        tree_output = ''.join(lines)
+
+        if return_string:
+            return tree_output
+        else:
+            print(tree_output)
+
+    def inspect_objects(self, objects_filter, checkpoint_state=None):
+        """Inspect specific objects from current tree or archived checkpoint.
+
+        Args:
+            objects_filter: List of object names or single pattern string
+            checkpoint_state: If provided, inspect that checkpoint's tree;
+                            otherwise current tree
+
+        Returns:
+            str: Formatted multi-line string with object summaries
+        """
+        # Use checkpoint state or current state
+        tree_state = checkpoint_state if checkpoint_state else self
+
+        # Convert filter to list if it's a string
+        if isinstance(objects_filter, str):
+            # Simple pattern matching - exact match or substring
+            filter_labels = [
+                label for label in tree_state.objects.keys() if label and (
+                    label == objects_filter or objects_filter in label)
+            ]
+        else:
+            # List of specific labels
+            filter_labels = [
+                label for label in objects_filter
+                if label in tree_state.objects
+            ]
+
+        if not filter_labels:
+            return "No matching objects found\n"
+
+        lines = []
+        lines.append(f"Object Inspection ({len(filter_labels)} objects)\n")
+        lines.append("-" * 80 + "\n")
+        # Add header row
+        header = f"{'Name':<25} {'Flags':>6} {'Link':<15} {'Children':<5} {'ExportPath'}"
+        lines.append(f"{header}\n")
+        lines.append("-" * 80 + "\n")
+
+        for label in sorted(filter_labels):
+            wrapper = tree_state.objects[label]
+            lines.append(f"{wrapper.debug_summary()}\n")
+
+        return ''.join(lines)
+
+    def inspect_checkpoints(self, objects_filter):
+        """Show evolution of key objects across all checkpoints.
+
+        Args:
+            objects_filter: List of object names or single pattern string
+        """
+        checkpoints = getattr(self, '_checkpoints', {})
+
+        if not checkpoints:
+            debug("No checkpoints available")
+            return
+
+        lines = []
+        lines.append(
+            f"=== CHECKPOINT INSPECTION: {len(checkpoints)} checkpoints ==="
+        )
+
+        # Sort checkpoints by timestamp
+        sorted_checkpoints = sorted(checkpoints.items(),
+                                    key=lambda x: x[1]['timestamp'])
+
+        for checkpoint_label, checkpoint_data in sorted_checkpoints:
+            timestamp = checkpoint_data['timestamp']
+            state = checkpoint_data['state']
+
+            lines.append(
+                f"\n--- Checkpoint: {checkpoint_label} ({timestamp}) ---")
+
+            inspection_result = self.inspect_objects(objects_filter, state)
+            for line in inspection_result.strip().split('\n'):
+                lines.append(f"  {line}")
+
+        debug('\n'.join(lines))
+
+    def print_tree(self, props=False, return_string=False):
+        """Print tree structure for diagnostics.
+
+        Args:
+            props: If True, also print object properties and
+                   internal properties
+            return_string: If True, return string instead of printing
+        """
+
+        def p(l, indent="", s=None):  # this is a recursive operation
+            if s is None:
+                s = list()
+            o = self.objects[l]
+            attr = ("S" if o.selected else "-")
+            attr = attr + ("s" if o.has_shape else "-")
+            attr = attr + ("v" if o.visible else "-")
+            s.append(f"{attr} {indent} {l} ({o.klass} {o.typeid})\n")
+
+            if props:
+                for k, v in o.prop.items():
+                    gp = o.prop_group[k] + '.' + k
+                    s.append(' ' * 10 + '%-20s= %s\n' % (gp, v))
+                for k, v in o.iprop.items():
+                    gp = 'i.' + k
+                    s.append(' ' * 10 + '%-20s= %s\n' % (gp, v))
+            for c in o.children:
+                p(c, indent + "  ", s)
+            return s
+
+        # Build the tree string
+        sl = []
+        sl.append('=' * 70 + '\n')
+        for cl in self.objects[None].children:
+            sl.extend(p(cl))
+        tree_output = ''.join(sl)
+
+        if return_string:
+            return tree_output
+        else:
+            print(tree_output)
+
+    ## End Debug and Display Functions
+    ############################################################
+
+################################################################################
+# Configuration
+################################################################################
+
+def get_config():
+    """Get configuration with document property override support.
+
+    Returns simple object with configuration values.
+    """
+    class Config:
+        pass
+    
+    config = Config()
+    doc = FreeCAD.ActiveDocument
+    
+    # Set configuration using getter functions (handle precedence internally)
+    config.RunSlicer = get_run_slicer()
+    config.PrintFlowDebug = DEBUG  
+    config.DocDefaults = DOC_DEFAULTS
+    config.AppendVersion = get_append_version()
+    config.SlicerCommand = get_slicer_path()
+    config.fcgroup = "PrintFlow"
+    
+    # Override with document properties for debug setting only
+    if doc and hasattr(doc, 'PrintFlowDebug'):
+        config.PrintFlowDebug = doc.PrintFlowDebug
+            
+    return config
+
+
+def export_filename(op, doc):
+    """Generate export filename based on document and options.
+
+    Uses ExportPattern property with version numbering if
+    AppendVersion=True.
+    """
+    if op.AppendVersion:
+        d = {'ExportPattern': '{BasePath}-e{ExportVersion}'}
+        if 'ExportVersion' not in doc.PropertiesList:
+            doc.addProperty('App::PropertyInteger', 'ExportVersion',
+                            op.fcgroup)
+            setattr(doc, 'ExportVersion', 0)
+        doc.ExportVersion += 1
+    else:
+        d = {'ExportPattern': '{BasePath}'}
+
+    d['BasePath'], _ = os.path.splitext(doc.FileName)
+    d['DirName'] = os.path.dirname(d['BasePath'])
+    p, _ = get_fc_props(doc, defaults=d)
+    fn = d['ExportPattern'].format(**p) + '.3mf'
+    return fn
+
+
+
+
+################################################################################
+# External Integration
+################################################################################
+def run_slicer(op, fn):
+    """Launch slicer application with exported file.
+
+    Args:
+        op: Options namespace containing SlicerCommand
+        fn: Path to 3MF file to open
+    """
+    # Validate slicer executable exists
+    if not os.path.isfile(op.SlicerCommand):
+        error("Slicer Not Found",
+              f"Cannot find slicer executable:\n{op.SlicerCommand}\n\n"
+              f"Please check your slicer installation or update the "
+              f"SlicerCommand setting.",
+              f"Attempted to run: {op.SlicerCommand}")
+        return
+    
+    cmd = [op.SlicerCommand, fn]
+    log('Running Slicer: %s' % cmd)
+    
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        error("Slicer Launch Failed",
+              f"Failed to launch slicer executable:\n{op.SlicerCommand}\n\n"
+              f"The file exists but cannot be executed. Please check "
+              f"permissions or try a different slicer.",
+              f"Command: {cmd}")
+        return
+    except Exception as e:
+        error("Slicer Launch Error",
+              f"Unexpected error launching slicer:\n{e}\n\n"
+              f"Please check your slicer configuration.",
+              f"Command: {cmd}\nError: {e}")
+        return
+
+    if cp.returncode != 0:
+        warn(f'Slicer returned exit code {cp.returncode}')
+        # Non-zero codes can be normal (e.g., PrusaSlicer returns 255 when already running)
+
+    st = cp.stdout.strip()
+    if st:
+        debug('STDOUT:', st)
+    st = cp.stderr.strip()
+    if st:
+        debug('STDERR:', st)
+
+
+################################################################################
+# Slicer Logic
+################################################################################
+def determine_slicer_and_objects(export_set, objects,
+                                 target_slicer_override, has_selection):
+    """Make the two key decisions for multi-slicer support.
+
+    Decision 1: Which slicer to run?
+    - If exactly 1 unique SlicerFormat value found among export-ready objects -> use that slicer
+    - If 0 or 2+ unique SlicerFormat values found -> use target_slicer_override,
+      then document-level SlicerFormat, then default "PrusaSlicer"
+
+    Decision 2: Which objects to include?
+    - If no user selection AND multiple slicers found -> prune objects that don't match chosen slicer
+    - Otherwise -> export all objects (selection override or single slicer scenario)
+
+    Args:
+        export_set: set of object labels to export
+        objects: Dict mapping object labels to FCObjectWrapper instances
+        target_slicer_override: Slicer specified by user (e.g., command line arg)
+        has_selection: Boolean indicating if objects are selected in TreeView
+
+    Returns:
+        tuple: (filtered_export_set, chosen_slicer)
+    """
+    # Decision 1: Which slicer to run?
+    slicers_found = set()
+    for key in export_set:
+        # Check container for SlicerFormat
+        try:
+            slicers_found.append(objects[key].iprop['SlicerFormat'])
+        except (KeyError, AttributeError):
+            pass
+    slicers_found.discard(None)  # Remove None values
+
+    if len(slicers_found) == 1:
+        chosen_slicer = list(slicers_found)[0]
+        log(f"Single slicer detected from objects: {chosen_slicer}")
+    else:
+        # Use override, then doc property, then default
+        doc = objects[None].fcobj if None in objects else None
+        chosen_slicer = (
+            target_slicer_override
+            or (getattr(doc, 'SlicerFormat', None) if doc else None)
+            or "PrusaSlicer")
+        if len(slicers_found) == 0:
+            debug(
+                f"No SlicerFormat properties found, using: {chosen_slicer}")
+        else:
+            debug(
+                f"Multiple slicers found {list(slicers_found)}, using: {chosen_slicer}"
+            )
+
+    # Decision 2: Which objects to include?
+    if not has_selection and len(slicers_found) > 1:
+        # Prune non-matching objects
+        filtered_set = {
+            key for key in export_set if \
+              objects[key].iprop.get('SlicerFormat', chosen_slicer) == chosen_slicer
+        }
+        debug(
+            f"Multi-slicer filtering: {len(fexport_set)} -> {len(filtered_set)} objects"
+        )
+    else:
+        # Export everything (selection override or single slicer)
+        filtered_set = export_set
+        if has_selection:
+            debug(
+                "Selection override: exporting all objects regardless of SlicerFormat"
+            )
+        else:
+            log("Single slicer scenario: exporting all objects")
+
+    log(f"Final slicer choice: {chosen_slicer}")
+    return filtered_set, chosen_slicer
+
+
+
+###############################################################################
+# START PrusaSlicer formatting
+
+
+class PrusaSlicerOutput:
+    """PrusaSlicer-compatible 3MF file writer.
+
+    This class handles all 3MF file generation for PrusaSlicer. It accesses
+    the tree data structure in the following ways:
+
+    - tree.objects: Dict mapping object labels to FCObjectWrapper instances
+      - wrapper.iprop: Internal properties (includes slicer properties)
+      - wrapper.label: Display label for the object
+      - wrapper.tessellate(tree.objects): Generate geometry vertices/triangles
+
+    Known/Supported Slicer Parameters:
+      - extruder (int)
+      - layer_height (float)
+      - perimeters (int)
+      - bottom_solid_layers (int)
+      - top_solid_layers (int)
+      - fill_density (string percent: "15%")
+      - fill_pattern (grid, rectilinear, gyroid, cubic, honeycomb...)
+      - support_material (0/1)
+      - support_material_auto (0/1)
+      - support_material_buildplate_only (0/1)
+      - support_material_interface_pattern (auto, ...)
+      - support_material_pattern (rectilinear, ...)
+      - support_material_spacing (float mm)
+      - support_material_threshold (deg)
+      - wipe_into_infill (0/1)
+      - wipe_into_objects (0/1)
+
+    Args:
+        tree: FCObjectTree instance with processed objects
+        export_groups: Dict from tree.get_export_groups() mapping
+                      object_name -> [volume_names]
+    """
+
+    def __init__(self, tree, export_groups):
+        self.tree = tree
+        self.export_groups = export_groups
+
+    def write(self, filename):
+        """Write 3MF file compatible with PrusaSlicer.
+
+        Args:
+            filename: Path to output .3mf file
+        """
+        with ZipFile(filename, 'w', ZIP_DEFLATED) as zf:
+            self._write_3mf_init(self.export_groups)
+            log('writing to: %s' % filename)
+            for f in [
+                    self._write_3mf_content_types, self._write_3mf_rels,
+                    self._write_3mf_model, self._write_3mf_slic3r_pe_model
+            ]:
+                archive, content = f()
+                zi = ZipInfo(archive)
+                zf.writestr(zi, content)
+
+    def _write_3mf_init(self, containers):
+        """Initialize 3MF object data from containers & volumes.
+
+        Tessellates all objects and builds the internal _slic3r_objects
+        structure needed for 3MF file generation.
+        """
+        # Each container becomes one 3MF <object>
+        # Each shape within the container becomes a <volume> within
+        # that object
+        self._slic3r_objects = []
+        object_id = 0
+        for object_key, volume_list in containers.items():
+            debug(f'writing object/volumes: {object_key}, {volume_list}')
+
+            ow = self.tree.objects[object_key]
+            omd = list(ow.iprop.items())
+            
+            # Use ExportPath for naming if available, otherwise fall back to ExportName/label
+            delimiter = getattr(self.tree.doc, 'ExportDelimiter', '.')
+            if 'ExportPath' in ow.iprop:
+                object_name = ow.iprop['ExportPath']
+            else:
+                object_name = ow.iprop.get('ExportName', ow.label)
+            debug(f'  object_name = {object_name}')
+            omd.append(('name', object_name))
+            object_id += 1
+            o = {
+                'id': object_id,
+                'type': 'model',  # could be "support" for custom support
+                'volumes': [],
+                'transform': "1 0 0 0 1 0 0 0 1 0 0 0",  # Identity
+                'vertices': [],
+                'triangles': [],
+                'object_metadata': omd
+            }
+
+            volumes = o['volumes']
+            firstid = 0
+            for volume_key in volume_list:
+                vol = {}
+
+                vw = self.tree.objects[volume_key]
+                vmd = list(vw.iprop.items())
+                vol['matrix'], vert, tri = vw.tessellate(self.tree.objects)
+                
+                # Use ExportPath for volume naming with container prefix stripping
+                if 'ExportPath' in vw.iprop:
+                    volume_name = vw.iprop['ExportPath']
+                    # Strip container prefix if volume path starts with container path + delimiter
+                    container_path = ow.iprop.get('ExportPath', ow.label)
+                    if volume_name.startswith(container_path + delimiter):
+                        volume_name = volume_name[len(container_path + delimiter):]
+                else:
+                    volume_name = vw.iprop.get('ExportName', vw.label)
+                debug(f'  volume_name =    {volume_name}')
+
+                i = len(o['vertices'])
+                tri = [(a + i, b + i, c + i) for (a, b, c) in tri]
+                vmd.append(('name', volume_name))
+                vol['volume_metadata'] = vmd
+                o['vertices'].extend(vert)
+                o['triangles'].extend(tri)
+                vol['firstid'] = firstid
+                firstid += len(tri)
+                vol['lastid'] = firstid - 1
+                volumes.append(vol)
+            self._slic3r_objects.append(o)
+
+    def _write_3mf_content_types(self):
+        return "[Content_Types].xml", template_content_types
+
+    def _write_3mf_rels(self):
+        return "_rels/.rels", template_rels
+
+    def _write_3mf_model(self):
+        metadata = fl(template_model_metadata, ())
+
+        object_list = []
+        build_list = []
+        for obj in self._slic3r_objects:
+            t = {
+                'id': obj['id'],
+                'transform': obj['transform'],
+                'vertices': fl(template_model_vertices, obj['vertices']),
+                'triangles': fl(template_model_triangles, obj['triangles'])
+            }
+            #print(t.keys())
+            object_list.append(template_model_object.format(**t))
+            build_list.append(template_model_build.format(**t))
+
+        content = template_model.format(metadata=metadata,
+                                        objects=''.join(object_list),
+                                        build=''.join(build_list))
+        return "3D/3dmodel.model", content
+
+    def _write_3mf_slic3r_pe_model(self):
+        object_list = []
+        for obj in self._slic3r_objects:
+            volume_list = []
+            for v in obj['volumes']:
+                v['volume_metadata'] = \
+                    fl(template_slic3r_pe_volume_metadata,
+                       v['volume_metadata'])
+                volume_list.append(template_slic3r_pe_volume.format(**v))
+            t = {
+                'object_metadata':
+                fl(template_slic3r_pe_object_metadata,
+                   obj['object_metadata']),
+                'volumes':
+                ''.join(volume_list),
+                'id':
+                obj['id']
+            }
+            object_list.append(template_slic3r_pe_object.format(**t))
+        objects = ''.join(object_list)
+        content = template_slic3r_pe_model.format(objects=objects)
+        return "Metadata/Slic3r_PE_model.config", content
+
+
+
+EXPORT_CLASSES = {'PrusaSlicer': PrusaSlicerOutput}
+
+
+# PrusaSlicer TEMPLATES
+
+template_rels = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+  <Relationship Target="/Metadata/thumbnail.png" Id="rel-2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>
+</Relationships>
+"""
+
+template_content_types = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+</Types>
+"""
+
+## model file: 3D/3dmodel.model
+#     template_model
+#       template_model_metadata
+#       template_model_object
+#         template_model_vertex
+#         template_model_triangle
+#       template_model_build
+
+template_model = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">
+{metadata}\
+  <resources>
+{objects}\
+  </resources>
+  <build>
+{build}\
+  </build>
+</model>
+"""
+
+template_model_metadata = """\
+  <metadata name="{}">{}</metadata>
+"""
+
+template_model_object = """\
+    <object id="{id}" type="model">
+      <mesh>
+        <vertices>
+{vertices}\
+        </vertices>
+        <triangles>
+{triangles}\
+        </triangles>
+      </mesh>
+    </object>
+"""
+
+template_model_vertices = """\
+          <vertex x="{}" y="{}" z="{}"/>
+"""
+template_model_triangles = """\
+          <triangle v1="{}" v2="{}" v3="{}"/>
+"""
+
+template_model_build = """\
+    <item objectid="{id}" transform="{transform}" printable="1"/>
+"""
+
+# PrusaSlicer-specific model details Metadata/Slic3r_PE_model.config
+template_slic3r_pe_model = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+{objects}\
+</config>
+"""
+template_slic3r_pe_object = """\
+  <object id="{id}" instances_count="1">
+{object_metadata}\
+{volumes}\
+  </object>
+"""
+template_slic3r_pe_object_metadata = """\
+    <metadata type="object" key="{}" value="{}"/>
+"""
+template_slic3r_pe_volume = """\
+    <volume firstid="{firstid}" lastid="{lastid}">
+{volume_metadata}\
+      <mesh edges_fixed="0" degenerate_facets="0" facets_removed="0"
+        facets_reversed="0" backwards_edges="0"/>
+    </volume>
+"""
+template_slic3r_pe_volume_metadata = """\
+      <metadata type="volume" key="{}" value="{}"/>
+"""
+# END PrusaSlicer formatting
+################################################################################
+
+
+################################################################################
+# Main Execution
+################################################################################
+def _validate_document(doc):
+    """Validate FreeCAD document for export.
+
+    Returns:
+        bool: True if valid, False if validation failed
+    """
+    if not doc:
+        error("No Active Document", 
+              "PrintFlow requires an active FreeCAD document.\n\n"
+              "Please open or create a FreeCAD document and try again.")
+        return False
+
+    if not doc.Objects:
+        error("Empty Document", 
+              "The active document contains no objects to export.\n\n"
+              "Please add some objects to your document and try again.")
+        return False
+
+    return True
+
+
+def _setup_debug_mode(doc):
+    """Set debug level from document PrintFlowDebug property."""
+    global DEBUG
+    if hasattr(doc, 'PrintFlowDebug') and doc.PrintFlowDebug:
+        DEBUG = int(doc.PrintFlowDebug)
+        log(f"Debug level set to {DEBUG} via document PrintFlowDebug property")
+
+
+def _process_objects(doc):
+    """Process document objects and determine export set.
+
+    Returns:
+        tuple: (tree, export_set, export_groups)
+    """
+    tree = FCObjectTree(doc)
+    export_set = tree.get_export_set()
+    return tree, export_set
+
+
+def _create_output(chosen_slicer, tree, final_groups):
+    """Create slicer-specific output object.
+
+    Returns:
+        Output object for the chosen slicer
+    """
+    if chosen_slicer in EXPORT_CLASSES:
+        output_class = EXPORT_CLASSES[chosen_slicer]
+        return output_class(tree, final_groups)
+    else:
+        raise ValueError(f"Unsupported slicer: {chosen_slicer}")
+
+
+def main(**kwargs):
+    """Main export function - exports FreeCAD document to 3MF format.
+
+    This is the primary entry point for the macro. It can be run directly
+    from FreeCAD's macro interface or called programmatically from Python.
+
+    The macro follows this process:
+    1. Parse export options from FreeCAD document properties
+    2. Build object tree from selected objects (or all if none selected)
+    3. Apply intelligent mapping of FreeCAD structures to slicer objects
+    4. Generate 3MF file with proper object/part hierarchy
+    5. Optionally launch slicer application with exported file
+
+    Export Behavior:
+    - Groups/Assemblies: Treated as organizational, contents exported individually
+    - StdParts: Become slicer "objects" with multiple "parts" if multi-shape
+    - Other objects: Become individual "parts" or "objects" based on context
+    - Properties: Per-object slicer settings preserved in 3MF metadata
+
+    Args:
+        **kwargs: Override options, common examples:
+            filename (str): Output file path (default: auto-generated)
+            target_slicer (str): Force specific slicer ('PrusaSlicer')
+            debug (bool): Enable debug output and visualization
+
+    Returns:
+        None: Results are exported to file and optionally sent to slicer
+
+    Raises:
+        ValueError: If unsupported slicer specified
+        Exception: For file I/O errors or FreeCAD document issues
+
+    Example Usage:
+        # Basic usage (run as macro)
+        main()
+
+        # Specify output filename
+        main(filename="/path/to/my_export.3mf")
+
+        # Enable debug mode
+        main(debug=True)
+    """
+    try:
+        # Setup and validation
+        op = get_config()
+        for k, v in kwargs.items():
+            setattr(op, k, v)
+
+        doc = FreeCAD.activeDocument()
+        if not _validate_document(doc):
+            return
+
+        _setup_debug_mode(doc)
+        fn = kwargs.get('filename', export_filename(op, doc))
+
+        # Phase 1: Object processing
+        tree, export_set = _process_objects(doc)
+
+        # Phase 2: Slicer analysis and filtering
+        final_set, chosen_slicer = determine_slicer_and_objects(
+            export_set, tree.objects, kwargs.get('target_slicer'),
+            tree.has_selection())
+
+        # Always show key export info
+        print(
+            f"PrintFLow: Exporting {len(final_set)} objects to {fn} using {chosen_slicer}"
+        )
+        print(f"Objects: {', '.join(final_set)}")
+
+        # Phase 3: Determine the STRUCTURE of the exported containers &
+        # shapes
+        final_groups = tree.get_export_groups(final_set)
+
+        # Phase 4: Slicer-specific output generation
+        output = _create_output(chosen_slicer, tree, final_groups)
+        output.write(fn)
+
+        # Launch slicer if requested
+        if op.RunSlicer:
+            print(f"Launching: {op.SlicerCommand} {fn}")
+            run_slicer(op, fn)
+
+        # Return tree object for debugging/inspection
+        return tree
+
+    except Exception as e:
+        import traceback
+        details = traceback.format_exc()
+        error("Export Failed", 
+              f"PrintFlow export failed with an unexpected error.\n\n"
+              f"Error: {e}\n\n"
+              f"Please check your document and try again.",
+              details)
+        raise
+
+debug('PrintFlow module loaded')
+if __name__ == '__main__':
+    log('Running main()')
+    main()
+

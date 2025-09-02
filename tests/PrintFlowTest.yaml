@@ -1,0 +1,389 @@
+tests:
+  link_export_shape:
+    name: "Link Export Shape"
+    description: >
+        Link to PartDesign Body with ExportShape=True should export
+        under MultiObject container (per LOGIC.md ExportPath rules).
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]
+
+  auto_export_pattern:
+    name: "Auto Export Pattern"
+    description: >
+        Objects with 'Export' in label should auto-export via
+        AutoExportPattern
+    export_settings: {}
+    expected_structure:
+      Cube001: ["Cube001"]
+      Cube002: ["Cube002"]
+
+  mixed_settings:
+    name: "Mixed Export Settings"
+    description: "Combination of explicit Export=True and auto-pattern"
+    export_settings:
+      Hex001: True
+      Cube001: False  # Override auto-pattern
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+      Cube002: ["Cube002"]  # auto-pattern, Cube001 disabled
+
+  container_with_volumes:
+    name: "Container with Volumes"
+    description: >
+        MultiObject container should export with Hex001 and Cup001
+        as volumes
+    export_settings:
+      MultiObject001: True
+      ExportGroup: False  # Focus on just MultiObject001
+    expected_structure:
+      MultiObject001: ["Hex001", "Cup001"]
+
+  no_exports:
+    name: "No Exports"
+    description: >
+        When no objects are marked for export, nothing should be
+        exported
+    export_settings:
+      ExportGroup: False  # Disable auto-pattern
+    expected_structure: {}
+
+  selection_link_descendant:
+    name: "Selection Link Descendant"
+    description: >
+        Test selection of Link descendant that appears as duplicate
+        in TreeView. Should export selected object through correct path.
+    export_settings: {}
+    selection_override: ["Hex"]  # Select original Hex, not Hex001 Link
+    expected_structure:
+      Hex: ["Hex"]  # Original selected directly, exports at root level
+
+  selection_link_object:
+    name: "Selection Link Object"
+    description: >
+        Test selection of Link object itself. Should export Link
+        wrapper subtree.
+    export_settings: {}
+    selection_override: ["Hex001"]  # Select the Link
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when selected
+
+  selection_ineligible_boolean:
+    name: "Selection Ineligible Boolean"
+    description: >
+        Test selection of object normally ineligible for export
+        (boolean operation part). Selection should override eligibility
+        rules.
+    export_settings:
+      ExportGroup: False  # Disable auto-pattern
+    selection_override: ["Cylinder"]  # Select boolean component
+    expected_structure:
+      Cylinder: ["Cylinder"]  # Should export despite being boolean part
+
+  selection_apppart_container:
+    name: "Selection App::Part Container"
+    description: >
+        Test selection of App::Part container. Exports the
+        container's own shape, not its children (literal selection
+        behavior).
+    export_settings:
+      ExportGroup: False  # Disable auto-pattern
+    selection_override: ["MultiObject"]  # Select the container
+    expected_structure:
+      MultiObject: ["MultiObject"]  # Container shape only
+
+  selection_apppart_child:
+    name: "Selection App::Part Child"
+    description: >
+        Test selection of actual child within App::Part container.
+        Exports child at root level (literal selection behavior).
+    export_settings:
+      ExportGroup: False  # Disable auto-pattern
+    selection_override: ["Hex001"]  # Select child Link
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when selected
+
+  selection_apppart_container_and_all_children:
+    name: "Selection App::Part Container and All Children"
+    description: >
+        Test selection of App::Part container plus all its printable
+        children. Should export container with printable children as
+        volumes.
+    export_settings:
+      ExportGroup: False  # Disable auto-pattern
+    selection_override: ["MultiObject", "Hex001", "Cup001"]
+    expected_structure:
+      MultiObject: ["Hex001", "Cup001"]  # Container with children
+
+  selection_apppart_container_and_one_child:
+    name: "Selection App::Part Container and One Child"
+    description: >
+        Test selection of App::Part container plus one actual child.
+        Should export container with one child as volume.
+    export_settings:
+      ExportGroup: False  # Disable auto-pattern
+    selection_override: ["MultiObject", "Hex001"]  # Select container and child
+    expected_structure:
+      MultiObject: ["Hex001"]  # Container with one child as volume
+
+  selection_multiple_conflict:
+    name: "Selection Multiple Objects"
+    description: >
+        Test selection of both original and Link objects.
+        Both should export since they're first-class objects that may
+        have different properties.
+    export_settings:
+      ExportGroup: False  # Disable auto-pattern
+    selection_override: ["Hex", "Hex001"]  # Select both original and Link
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when selected
+      Hex: ["Hex"]  # Original exports at root level
+
+  slicer_properties:
+    name: "Slicer Properties Inheritance"
+    description: >
+        Test that slicer properties are properly inherited and passed
+        through to 3MF. There are extruder settings for both Cup (3) and
+        MultiObject (5) in the test document.
+    export_settings:
+      MultiObject001: True
+      ExportGroup: False  # Disable auto-pattern
+    expected_structure:
+      MultiObject001: ["Hex001", "Cup001"]
+    expected_properties:
+      MultiObject001: {'extruder': '5'}  # Container inherits
+      Cup001: {'extruder': '5'}          # Tree inheritance
+
+  document_level_linktreepriority_false:
+    name: "Document-Level LinkTreePriority False Test"
+    description: >
+        Test LinkTreePriority=false behavior at document level where
+        linked object properties globally take priority over tree parent
+        properties. Sets LinkTreePriority=false on the document itself
+        during test.
+    export_settings:
+      MultiObject001: True
+      ExportGroup: False  # Disable auto-pattern
+    property_settings:
+      PrintFlowTest: {'LinkTreePriority': false}  # Set document-level
+    expected_structure:
+      MultiObject001: ["Hex001", "Cup001"]
+    expected_properties:
+      MultiObject001: {'extruder': '5'}  # Container inherits
+      Cup001: {'extruder': '3'}          # Linked object priority
+
+  export_name_custom:
+    name: "ExportName Custom Naming"
+    description: >
+        Test that ExportName property overrides default label-based naming
+        in export paths and slicer structure.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'AppendVersion': false}
+      Hex001: {'ExportName': 'CustomHexagon'}
+    expected_structure:
+      "MultiObject.CustomHexagon": ["MultiObject.CustomHexagon"]  # Shape exports directly using ExportName
+
+  export_container_force:
+    name: "ExportContainer Force Container"
+    description: >
+        Test ExportContainer=True forces object to act as container
+        rather than shape, even for objects that would normally export
+        as shapes.
+    export_settings:
+      Hex: True  # Original Hex (normally exports as shape)
+      ExportGroup: False
+    property_settings:
+      Hex: {'ExportContainer': true}
+    expected_structure:
+      Hex: ["Hex"]  # Acts as container with self as volume
+
+  export_shape_force:
+    name: "ExportShape Force Shape"
+    description: >
+        Test ExportShape=True forces Part container to export as single
+        shape instead of organizing its contents.
+    export_settings:
+      MultiObject: True  # Normally container with volumes
+      ExportGroup: False
+    property_settings:
+      MultiObject: {'ExportShape': true}
+    expected_structure:
+      MultiObject: ["MultiObject"]  # Single shape, not container
+
+  slicer_format_override:
+    name: "SlicerFormat Per-Object Override"
+    description: >
+        Test SlicerFormat property overrides default slicer format
+        for specific objects.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      Hex001: {'SlicerFormat': 'CustomSlicer'}
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+    expected_properties:
+      "MultiObject.Hex001": {'SlicerFormat': 'CustomSlicer'}
+
+  document_runslcer_override:
+    name: "Document RunSlicer Override"
+    description: >
+        Test document-level RunSlicer property overrides FreeCAD
+        Parameter setting.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'RunSlicer': false}
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+
+  document_appendversion_override:
+    name: "Document AppendVersion Override"
+    description: >
+        Test document-level AppendVersion property overrides FreeCAD
+        Parameter setting and affects filename generation.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'AppendVersion': true, 'ExportVersion': 42}
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+
+  export_pattern_variables:
+    name: "ExportPattern Variable Templating"
+    description: >
+        Test ExportPattern supports variables like {BasePath}, {DirName},
+        {ExportVersion} for custom filename generation.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'ExportPattern': 'custom-{BasePath}-v{ExportVersion}',
+                     'AppendVersion': true, 'ExportVersion': 5}
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+
+  auto_export_pattern_custom:
+    name: "AutoExportPattern Custom Regex"
+    description: >
+        Test custom AutoExportPattern regex matches different label
+        patterns beyond default ".*Export.*".
+    export_settings: {}
+    property_settings:
+      PrintFlowTest: {'AutoExportPattern': '.*Tube.*'}
+    expected_structure:
+      TubeCustom: ["TubeCustom"]  # Matches "Tube" pattern
+
+  export_delimiter_custom:
+    name: "ExportDelimiter Custom Separator"
+    description: >
+        Test custom ExportDelimiter changes path separator from default
+        dot to custom character for both explicit and natural paths.
+    export_settings:
+      Hex001: True
+      Cup001: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'ExportDelimiter': '/'}
+      Hex001: {'ExportPath': 'Container/CustomHex'}
+    expected_structure:
+      "Container/CustomHex": ["Container/CustomHex"]  # Explicit path, no container exported
+      "MultiObject/Cup001": ["MultiObject/Cup001"]  # Auto-derived path, no container exported
+
+  multiple_extruders:
+    name: "Multiple Extruder Assignment"
+    description: >
+        Test multiple objects with different extruder assignments
+        for multi-material printing.
+    export_settings:
+      Hex: True
+      Cup: True
+      ExportGroup: False
+    property_settings:
+      Hex: {'extruder': 1}
+      Cup: {'extruder': 2}
+    expected_structure:
+      Hex: ["Hex"]
+      Cup: ["Cup"]
+    expected_properties:
+      Hex: {'extruder': '1'}
+      Cup: {'extruder': '2'}
+
+  advanced_slicer_properties:
+    name: "Advanced Slicer Properties"
+    description: >
+        Test various slicer properties from manual reference are
+        properly passed through to 3MF metadata.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      Hex001: {'layer_height': 0.15, 'fill_density': '25%', 'perimeters': 3,
+               'support_material': 1, 'first_layer_temperature': 220}
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+    expected_properties:
+      "MultiObject.Hex001": {'layer_height': '0.15', 'fill_density': '25%', 'perimeters': '3',
+               'support_material': '1', 'first_layer_temperature': '220'}
+
+  container_and_shape_both_export:
+    name: "Container and Shape Both Export"
+    description: >
+        Test behavior when both container (MultiObject) and one of its
+        contained shapes (Hex001) both have Export=True explicitly set.
+        Other shape (Cup001) explicitly disabled to avoid inheritance.
+    export_settings:
+      MultiObject: True     # Container
+      Hex001: True         # Shape within container  
+      Cup001: False        # Explicitly disable other shape
+      ExportGroup: False
+    expected_structure:
+      MultiObject: ["Hex001"]  # Container exports with only Hex001 as volume
+
+  ignore_assembly_placement:
+    name: "IgnoreAssemblyPlacement Behavior"
+    description: >
+        Test IgnoreAssemblyPlacement=False causes Assembly absolute
+        position to affect exported part positions. Assembly expands
+        to its Link children.
+    export_settings:
+      Assembly: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'IgnoreAssemblyPlacement': false}
+    expected_structure:
+      MultiObject001: ["Hex001", "Cup001"]  # Assembly expands to Link children
+      Cube003: ["Cube003"]
+
+  printflow_debug_logging:
+    name: "PrintFlowDebug Verbose Logging"
+    description: >
+        Test PrintFlowDebug=True enables detailed debug output during
+        export process.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'PrintFlowDebug': true}
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+
+  export_version_increment:
+    name: "ExportVersion Auto-Increment"
+    description: >
+        Test ExportVersion automatically increments when AppendVersion=True
+        and affects filename generation.
+    export_settings:
+      Hex001: True
+      ExportGroup: False
+    property_settings:
+      PrintFlowTest: {'AppendVersion': true, 'ExportVersion': 10}
+    expected_structure:
+      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
