@@ -26,7 +26,7 @@ manual:
 lint:
     pylint --rcfile .pylintrc PrintFlow.FCMacro > lint.log || true
     @echo "Pylint report written to lint.log"
-    
+
 # Clean up generated files
 clean:
     rm -f *.3mf *.log *.FCStd1
