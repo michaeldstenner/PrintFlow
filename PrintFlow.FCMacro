@@ -2584,10 +2584,42 @@ def determine_slicer_and_objects(export_set, objects,
 
 
 ###############################################################################
-# START PrusaSlicer formatting
+# START 3MF Export Framework
+
+import textwrap
+from abc import ABC, abstractmethod
+
+class ThreeMFExporter(ABC):
+    """Abstract base class for 3MF export functionality.
+    
+    Provides common template management and structure for slicer-specific 3MF exporters.
+    Subclasses define _RAW_* template constants that get auto-cleaned into *_template 
+    instance attributes.
+    """
+    
+    def __init__(self, tree, export_groups):
+        self.tree = tree
+        self.export_groups = export_groups
+        self._auto_clean_templates()
+    
+    def _auto_clean_templates(self):
+        """Auto-convert all _RAW_* class constants to clean *_template instance attrs."""
+        for name, value in self.__class__.__dict__.items():
+            if name.startswith('_RAW_') and isinstance(value, str):
+                template_name = name[5:].lower() + '_template'
+                setattr(self, template_name, self._clean_template(value))
+    
+    def _clean_template(self, raw_template):
+        """Clean template whitespace using standard library."""
+        return textwrap.dedent(raw_template.lstrip('\n'))
+    
+    @abstractmethod
+    def write(self, filename):
+        """Write 3MF file - implemented by subclasses."""
+        pass
 
 
-class PrusaSlicerOutput:
+class PrusaSlicerExporter(ThreeMFExporter):
     """PrusaSlicer-compatible 3MF file writer.
 
     This class handles all 3MF file generation for PrusaSlicer. It accesses
@@ -2622,9 +2654,73 @@ class PrusaSlicerOutput:
                       object_name -> [volume_names]
     """
 
-    def __init__(self, tree, export_groups):
-        self.tree = tree
-        self.export_groups = export_groups
+    # PrusaSlicer 3MF Templates (auto-cleaned to *_template attributes)
+    _RAW_CONTENT_TYPES = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+        <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+        <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+        <Default Extension="png" ContentType="image/png"/>
+      </Types>"""
+
+    _RAW_RELS = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+        <Relationship Target="/Metadata/thumbnail.png" Id="rel-2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>
+      </Relationships>"""
+
+    _RAW_MODEL = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">
+      {metadata}  <resources>
+      {objects}  </resources>
+        <build>
+      {build}  </build>
+      </model>"""
+
+    _RAW_MODEL_METADATA = """
+        <metadata name="{}">{}</metadata>"""
+
+    _RAW_MODEL_OBJECT = """
+          <object id="{id}" type="model">
+            <mesh>
+              <vertices>
+      {vertices}        </vertices>
+              <triangles>
+      {triangles}        </triangles>
+            </mesh>
+          </object>"""
+
+    _RAW_MODEL_VERTICES = """
+                <vertex x="{}" y="{}" z="{}"/>"""
+
+    _RAW_MODEL_TRIANGLES = """
+                <triangle v1="{}" v2="{}" v3="{}"/>"""
+
+    _RAW_MODEL_BUILD = """
+          <item objectid="{id}" transform="{transform}" printable="1"/>"""
+
+    _RAW_SLIC3R_PE_MODEL = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <config>
+      {objects}</config>"""
+
+    _RAW_SLIC3R_PE_OBJECT = """
+        <object id="{id}" instances_count="1">
+      {object_metadata}{volumes}  </object>"""
+
+    _RAW_SLIC3R_PE_OBJECT_METADATA = """
+          <metadata type="object" key="{}" value="{}"/>"""
+
+    _RAW_SLIC3R_PE_VOLUME = """
+          <volume firstid="{firstid}" lastid="{lastid}">
+      {volume_metadata}        <mesh edges_fixed="0" degenerate_facets="0" facets_removed="0"
+              facets_reversed="0" backwards_edges="0"/>
+          </volume>"""
+
+    _RAW_SLIC3R_PE_VOLUME_METADATA = """
+            <metadata type="volume" key="{}" value="{}"/>"""
 
     def write(self, filename):
         """Write 3MF file compatible with PrusaSlicer.
@@ -2712,13 +2808,13 @@ class PrusaSlicerOutput:
             self._slic3r_objects.append(o)
 
     def _write_3mf_content_types(self):
-        return "[Content_Types].xml", template_content_types
+        return "[Content_Types].xml", self.content_types_template
 
     def _write_3mf_rels(self):
-        return "_rels/.rels", template_rels
+        return "_rels/.rels", self.rels_template
 
     def _write_3mf_model(self):
-        metadata = fl(template_model_metadata, ())
+        metadata = fl(self.model_metadata_template, ())
 
         object_list = []
         build_list = []
@@ -2726,14 +2822,14 @@ class PrusaSlicerOutput:
             t = {
                 'id': obj['id'],
                 'transform': obj['transform'],
-                'vertices': fl(template_model_vertices, obj['vertices']),
-                'triangles': fl(template_model_triangles, obj['triangles'])
+                'vertices': fl(self.model_vertices_template, obj['vertices']),
+                'triangles': fl(self.model_triangles_template, obj['triangles'])
             }
             #print(t.keys())
-            object_list.append(template_model_object.format(**t))
-            build_list.append(template_model_build.format(**t))
+            object_list.append(self.model_object_template.format(**t))
+            build_list.append(self.model_build_template.format(**t))
 
-        content = template_model.format(metadata=metadata,
+        content = self.model_template.format(metadata=metadata,
                                         objects=''.join(object_list),
                                         build=''.join(build_list))
         return "3D/3dmodel.model", content
@@ -2744,123 +2840,29 @@ class PrusaSlicerOutput:
             volume_list = []
             for v in obj['volumes']:
                 v['volume_metadata'] = \
-                    fl(template_slic3r_pe_volume_metadata,
+                    fl(self.slic3r_pe_volume_metadata_template,
                        v['volume_metadata'])
-                volume_list.append(template_slic3r_pe_volume.format(**v))
+                volume_list.append(self.slic3r_pe_volume_template.format(**v))
             t = {
                 'object_metadata':
-                fl(template_slic3r_pe_object_metadata,
+                fl(self.slic3r_pe_object_metadata_template,
                    obj['object_metadata']),
                 'volumes':
                 ''.join(volume_list),
                 'id':
                 obj['id']
             }
-            object_list.append(template_slic3r_pe_object.format(**t))
+            object_list.append(self.slic3r_pe_object_template.format(**t))
         objects = ''.join(object_list)
-        content = template_slic3r_pe_model.format(objects=objects)
+        content = self.slic3r_pe_model_template.format(objects=objects)
         return "Metadata/Slic3r_PE_model.config", content
 
 
 
-EXPORT_CLASSES = {'PrusaSlicer': PrusaSlicerOutput}
+EXPORT_CLASSES = {'PrusaSlicer': PrusaSlicerExporter}
 
 
-# PrusaSlicer TEMPLATES
-
-template_rels = """\
-<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
-  <Relationship Target="/Metadata/thumbnail.png" Id="rel-2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>
-</Relationships>
-"""
-
-template_content_types = """\
-<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
-  <Default Extension="png" ContentType="image/png"/>
-</Types>
-"""
-
-## model file: 3D/3dmodel.model
-#     template_model
-#       template_model_metadata
-#       template_model_object
-#         template_model_vertex
-#         template_model_triangle
-#       template_model_build
-
-template_model = """\
-<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">
-{metadata}\
-  <resources>
-{objects}\
-  </resources>
-  <build>
-{build}\
-  </build>
-</model>
-"""
-
-template_model_metadata = """\
-  <metadata name="{}">{}</metadata>
-"""
-
-template_model_object = """\
-    <object id="{id}" type="model">
-      <mesh>
-        <vertices>
-{vertices}\
-        </vertices>
-        <triangles>
-{triangles}\
-        </triangles>
-      </mesh>
-    </object>
-"""
-
-template_model_vertices = """\
-          <vertex x="{}" y="{}" z="{}"/>
-"""
-template_model_triangles = """\
-          <triangle v1="{}" v2="{}" v3="{}"/>
-"""
-
-template_model_build = """\
-    <item objectid="{id}" transform="{transform}" printable="1"/>
-"""
-
-# PrusaSlicer-specific model details Metadata/Slic3r_PE_model.config
-template_slic3r_pe_model = """\
-<?xml version="1.0" encoding="UTF-8"?>
-<config>
-{objects}\
-</config>
-"""
-template_slic3r_pe_object = """\
-  <object id="{id}" instances_count="1">
-{object_metadata}\
-{volumes}\
-  </object>
-"""
-template_slic3r_pe_object_metadata = """\
-    <metadata type="object" key="{}" value="{}"/>
-"""
-template_slic3r_pe_volume = """\
-    <volume firstid="{firstid}" lastid="{lastid}">
-{volume_metadata}\
-      <mesh edges_fixed="0" degenerate_facets="0" facets_removed="0"
-        facets_reversed="0" backwards_edges="0"/>
-    </volume>
-"""
-template_slic3r_pe_volume_metadata = """\
-      <metadata type="volume" key="{}" value="{}"/>
-"""
-# END PrusaSlicer formatting
+# END 3MF Export Framework
 ################################################################################
 
 
