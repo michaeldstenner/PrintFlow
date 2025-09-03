@@ -410,4 +410,4 @@ supports it, PrintFlow does, too!
 
 ---
 
-*This manual covers PrintFlow version 1.0.0*
+*This manual covers PrintFlow version 1.1.0*
