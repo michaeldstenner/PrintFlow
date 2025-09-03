@@ -1,0 +1,19 @@
+[tool.bumpversion]
+current_version = "1.0.0"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+search = "{current_version}"
+replace = "{new_version}"
+commit = true
+tag = true
+commit_args = "--no-verify"
+
+[[tool.bumpversion.files]]
+filename = "PrintFlow.FCMacro"
+search = "__version__ = \"{current_version}\""
+replace = "__version__ = \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "docs/PrintFlowManual.md"
+search = "Version {current_version}"
+replace = "Version {new_version}"

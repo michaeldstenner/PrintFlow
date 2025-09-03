@@ -126,7 +126,7 @@ def dbprint(*args, level=4, source=1):
     Only prints when DEBUG >= level. Formats output with calling function
     context and indents multi-line values for readability in FreeCAD's
     report view. Also writes to LOGFILE if defined.
-    
+
     Args:
         source: Stack frame depth for source info. None=no source, int=frames back
     """
@@ -156,10 +156,10 @@ def dbprint(*args, level=4, source=1):
             _LOGFILE_FO.flush()
         _LOGFILE_FO.write(s + '\n')
         _LOGFILE_FO.flush()
-    
+
     # Strip ANSI escape codes for console output
     s = re.sub(r'\x1b\[[0-9;]*m', '', s)
-    
+
     # Use appropriate FreeCAD Console method based on level
     if level == 1:  # error
         FreeCAD.Console.PrintError(s + '\n')
@@ -241,7 +241,7 @@ def get_append_version():
     doc = FreeCAD.ActiveDocument
     if doc and hasattr(doc, 'AppendVersion'):
         return doc.AppendVersion
-    
+
     # 2. FreeCAD Parameters
     try:
         param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
@@ -256,7 +256,7 @@ def get_slicer_format():
     doc = FreeCAD.ActiveDocument
     if doc and hasattr(doc, 'SlicerFormat') and doc.SlicerFormat:
         return doc.SlicerFormat
-    
+
     # 2. FreeCAD Parameters
     try:
         param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
@@ -267,18 +267,18 @@ def get_slicer_format():
 
 def get_slicer_path():
     """Get slicer command with precedence: module > document > parameters > browse.
-    
+
     Returns path to slicer executable, prompting user to browse if needed.
     """
     # 1. Module-level override
     if SLICER_COMMAND is not None:
         return SLICER_COMMAND
-    
+
     # 2. Document-level property
     doc = FreeCAD.ActiveDocument
     if doc and hasattr(doc, 'SlicerPath') and doc.SlicerPath:
         return doc.SlicerPath
-    
+
     # 3. FreeCAD Parameters
     try:
         param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
@@ -287,7 +287,7 @@ def get_slicer_path():
             return slicer_cmd
     except:
         pass
-    
+
     # 4. First-run setup dialog
     return setup_first_run()
 
@@ -296,23 +296,23 @@ def setup_first_run():
     """Show first-run setup dialog to configure PrintFlow preferences."""
     try:
         from PySide import QtGui
-        
+
         # Create main dialog
         dialog = QtGui.QDialog()
         dialog.setWindowTitle("PrintFlow First-Run Setup")
         dialog.setFixedSize(500, 300)
-        
+
         layout = QtGui.QVBoxLayout()
-        
+
         # Welcome message
         welcome = QtGui.QLabel("Welcome to PrintFlow! Let's configure your preferences:")
         welcome.setWordWrap(True)
         layout.addWidget(welcome)
-        
+
         # Slicer configuration
         slicer_group = QtGui.QGroupBox("Slicer Configuration")
         slicer_layout = QtGui.QVBoxLayout()
-        
+
         # Slicer format selection
         format_layout = QtGui.QHBoxLayout()
         format_label = QtGui.QLabel("Slicer Format:")
@@ -321,14 +321,14 @@ def setup_first_run():
         format_layout.addWidget(format_label)
         format_layout.addWidget(format_combo)
         slicer_layout.addLayout(format_layout)
-        
+
         # Slicer path selection
         path_layout = QtGui.QHBoxLayout()
         path_label = QtGui.QLabel("Slicer Path:")
         slicer_path_edit = QtGui.QLineEdit()
         slicer_path_edit.setPlaceholderText("Path to your slicer executable...")
         browse_button = QtGui.QPushButton("Browse...")
-        
+
         def browse_for_slicer():
             file_dialog = QtGui.QFileDialog()
             file_dialog.setWindowTitle("Select 3D Printing Slicer")
@@ -336,44 +336,44 @@ def setup_first_run():
             if file_dialog.exec_():
                 selected = file_dialog.selectedFiles()[0]
                 slicer_path_edit.setText(selected)
-        
+
         browse_button.clicked.connect(browse_for_slicer)
-        
+
         path_layout.addWidget(path_label)
         path_layout.addWidget(slicer_path_edit)
         path_layout.addWidget(browse_button)
         slicer_layout.addLayout(path_layout)
-        
+
         slicer_group.setLayout(slicer_layout)
         layout.addWidget(slicer_group)
-        
+
         # Options
         options_group = QtGui.QGroupBox("Default Behavior")
         options_layout = QtGui.QVBoxLayout()
-        
+
         run_slicer_check = QtGui.QCheckBox("Auto-launch slicer after export")
         run_slicer_check.setChecked(RUN_SLICER)
-        
+
         append_version_check = QtGui.QCheckBox("Add version numbers to filenames")
         append_version_check.setChecked(APPEND_VERSION)
-        
+
         options_layout.addWidget(run_slicer_check)
         options_layout.addWidget(append_version_check)
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
-        
+
         # Buttons
         button_layout = QtGui.QHBoxLayout()
         ok_button = QtGui.QPushButton("OK")
         cancel_button = QtGui.QPushButton("Cancel")
-        
+
         def save_settings():
             slicer_path = slicer_path_edit.text().strip()
             if not slicer_path:
-                QtGui.QMessageBox.warning(dialog, "Error", 
+                QtGui.QMessageBox.warning(dialog, "Error",
                                         "Please select a slicer executable.")
                 return
-            
+
             try:
                 param_group = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Macros/PrintFlow")
                 param_group.SetString("SlicerPath", slicer_path)
@@ -386,24 +386,24 @@ def setup_first_run():
                        f"append_version={append_version_check.isChecked()}")
                 dialog.accept()
             except Exception as e:
-                QtGui.QMessageBox.critical(dialog, "Error", 
+                QtGui.QMessageBox.critical(dialog, "Error",
                                          f"Could not save preferences: {str(e)}")
-        
+
         ok_button.clicked.connect(save_settings)
         cancel_button.clicked.connect(dialog.reject)
-        
+
         button_layout.addWidget(ok_button)
         button_layout.addWidget(cancel_button)
         layout.addLayout(button_layout)
-        
+
         dialog.setLayout(layout)
-        
+
         if dialog.exec_() == QtGui.QDialog.Accepted:
             return slicer_path_edit.text().strip()
         else:
             # User cancelled - return fallback
             return os.path.join(os.path.dirname(__file__), "slicer_wrapper")
-            
+
     except Exception as e:
         error("First-run setup failed", str(e))
         # Fallback to simple file dialog
@@ -412,7 +412,7 @@ def setup_first_run():
             dialog = QtGui.QFileDialog()
             dialog.setWindowTitle("Select 3D Printing Slicer")
             dialog.setNameFilter("Executables (*)")
-            
+
             if dialog.exec_():
                 selected_path = dialog.selectedFiles()[0]
                 if selected_path:
@@ -426,7 +426,7 @@ def setup_first_run():
                     return selected_path
         except:
             warn("Could not show slicer selection dialog")
-        
+
         # Final fallback
         return os.path.join(os.path.dirname(__file__), "slicer_wrapper")
 
@@ -1033,6 +1033,7 @@ class FCObjectTree:
         Args:
             link_label: Label of Link wrapper to create descendants for
         """
+        dbprint(f"DEBUG LINK DESCENDENTS: Processing link {link_label}")
         self._create_virtual_descendants(link_label)
         self._handle_link_array_elements(link_label)
 
@@ -1055,9 +1056,14 @@ class FCObjectTree:
         linked_obj = link_wrapper.link
 
         if not linked_obj or linked_obj.Label not in self.objects:
+            dbprint(f"DEBUG VIRTUAL DESC: {link_label} - linked object "
+                   f"{linked_obj.Label if linked_obj else 'None'} not found")
             return  # Linked object not found
 
         original_wrapper = self.objects[linked_obj.Label]
+        dbprint(f"DEBUG VIRTUAL DESC: {link_label} -> {linked_obj.Label}, "
+               f"original has {len(original_wrapper.children)} children: "
+               f"{original_wrapper.children}")
 
         self._create_linked_subtree(link_wrapper, original_wrapper,
                                     link_label)
@@ -1099,7 +1105,7 @@ class FCObjectTree:
             link_wrapper.children.append(element_label)
 
     def _create_linked_subtree(self, link_wrapper, original_wrapper,
-                               prefix):
+                               prefix, processing_chain=None):
         """Create virtual descendants for all children of a linked object.
 
         Creates virtual wrapper objects that simulate what the Link's
@@ -1116,63 +1122,103 @@ class FCObjectTree:
             - Adds child labels to link_wrapper.children
             - Sets parent relationships on virtual wrappers
         """
+        # Initialize processing chain to detect circular references
+        if processing_chain is None:
+            processing_chain = set()
+
+        # Detect circular reference
+        if original_wrapper.label in processing_chain:
+            warn(f"CIRCULAR REFERENCE: Skipping {original_wrapper.label} "
+                 f"(already processing in chain: {sorted(processing_chain)})")
+            return
+
         if not original_wrapper.children:
             return  # No children to process
 
-        for child_label in original_wrapper.children:
-            if child_label not in self.objects:
-                continue  # Skip missing children
+        # Add current object to processing chain
+        processing_chain.add(original_wrapper.label)
 
-            original_child = self.objects[child_label]
-            virtual_label = f"{prefix}.{child_label}"
+        try:
+            for child_label in original_wrapper.children:
+                dbprint(f"DEBUG SUBTREE LOOP: Processing child {child_label} in {prefix}")
 
-            # Handle Link children: use clean linked object instead of
-            # processed Link wrapper
-            if (hasattr(original_child.fcobj, 'LinkedObject')
-                    and original_child.fcobj.LinkedObject):
-                # This child is a Link - use its clean linked object for
-                # recursion
-                linked_obj = original_child.fcobj.LinkedObject
-                if linked_obj.Label in self.objects:
-                    clean_wrapper = self.objects[linked_obj.Label]
-                    # Create virtual Link descendant that will recurse
-                    # with clean data
-                    final_linked_obj = self._dereference_link_chain(
-                        original_child.fcobj)
-                    virtual_child = self.object_class(
-                        fcobj=original_child.fcobj, link=final_linked_obj)
-                    virtual_child.parent = link_wrapper.label
-                    virtual_child.is_link_descendant = True
+                if child_label not in self.objects:
+                    dbprint(f"DEBUG SUBTREE SKIP: {child_label} not in objects")
+                    continue  # Skip missing children
 
-                    # Add to tree structure
-                    self.objects[virtual_label] = virtual_child
-                    link_wrapper.children.append(virtual_label)
+                original_child = self.objects[child_label]
+                virtual_label = f"{prefix}.{child_label}"
 
-                    # Recursively create descendants using CLEAN linked
-                    # object wrapper
-                    if clean_wrapper.children:
-                        self._create_linked_subtree(virtual_child,
-                                                    clean_wrapper,
-                                                    virtual_label)
-                continue  # Skip normal processing for Link children
+                # Skip if virtual object already exists (prevents recursion)
+                if virtual_label in self.objects:
+                    dbprint(f"DEBUG SUBTREE SKIP: {virtual_label} already exists")
+                    continue
 
-            # Create normal (non-Link) descendant wrapper
-            final_linked_obj = self._dereference_link_chain(
-                original_child.fcobj)
-            virtual_child = self.object_class(fcobj=original_child.fcobj,
-                                              link=final_linked_obj)
-            virtual_child.parent = link_wrapper.label
-            # Flag to prevent double Link processing
-            virtual_child.is_link_descendant = True
+                # Handle Link children: use clean linked object instead of
+                # processed Link wrapper
 
-            # Add to tree structure
-            self.objects[virtual_label] = virtual_child
-            link_wrapper.children.append(virtual_label)
+                # Debug Link detection
+                has_linked_obj = hasattr(original_child.fcobj, 'LinkedObject')
+                linked_obj_val = getattr(original_child.fcobj, 'LinkedObject', None) if has_linked_obj else None
+                fcobj_type = type(original_child.fcobj).__name__
+                dbprint(f"DEBUG LINK CHECK: {child_label} type={fcobj_type}, "
+                       f"hasLinkedObject={has_linked_obj}, "
+                       f"LinkedObject={linked_obj_val}")
 
-            # Recursively create virtual grandchildren
-            if original_child.children:
-                self._create_linked_subtree(virtual_child, original_child,
-                                            virtual_label)
+                if (hasattr(original_child.fcobj, 'LinkedObject')
+                        and original_child.fcobj.LinkedObject):
+                    dbprint(f"DEBUG SUBTREE: Processing Link child "
+                           f"{child_label} in {prefix}")
+                    # This child is a Link - use its clean linked object for
+                    # recursion
+                    linked_obj = original_child.fcobj.LinkedObject
+                    if linked_obj.Label in self.objects:
+                        clean_wrapper = self.objects[linked_obj.Label]
+                        # Create virtual Link descendant that will recurse
+                        # with clean data
+                        final_linked_obj = self._dereference_link_chain(
+                            original_child.fcobj)
+                        virtual_child = self.object_class(
+                            fcobj=original_child.fcobj, link=final_linked_obj)
+                        virtual_child.parent = link_wrapper.label
+                        virtual_child.is_link_descendant = True
+
+                        # Add to tree structure
+                        self.objects[virtual_label] = virtual_child
+                        link_wrapper.children.append(virtual_label)
+
+                        # Recursively create descendants using CLEAN linked
+                        # object wrapper
+                        if clean_wrapper.children:
+                            self._create_linked_subtree(virtual_child,
+                                                        clean_wrapper,
+                                                        virtual_label,
+                                                        processing_chain.copy())
+                    continue  # Skip normal processing for Link children
+
+                # Create normal (non-Link) descendant wrapper
+                dbprint(f"DEBUG SUBTREE: Processing normal child "
+                       f"{child_label} in {prefix}")
+                final_linked_obj = self._dereference_link_chain(
+                    original_child.fcobj)
+                virtual_child = self.object_class(fcobj=original_child.fcobj,
+                                                  link=final_linked_obj)
+                virtual_child.parent = link_wrapper.label
+                # Flag to prevent double Link processing
+                virtual_child.is_link_descendant = True
+
+                # Add to tree structure
+                self.objects[virtual_label] = virtual_child
+                link_wrapper.children.append(virtual_label)
+
+                # Recursively create virtual grandchildren
+                if original_child.children:
+                    self._create_linked_subtree(virtual_child, original_child,
+                                                virtual_label,
+                                                processing_chain.copy())
+        finally:
+            # Remove current object from processing chain
+            processing_chain.discard(original_wrapper.label)
 
     ## end of helpers for Link management and Tree Expansion
     ##################################################################
@@ -1476,7 +1522,7 @@ class FCObjectTree:
             if should_export:
                 # Get delimiter from document
                 delimiter = getattr(self.doc, 'ExportDelimiter', '.')
-                
+
                 # Build the new prefix/path
                 if prefix is None:
                     new_path = obj_wrapper.iprop.get('ExportName',
@@ -2365,22 +2411,22 @@ def get_config():
     """
     class Config:
         pass
-    
+
     config = Config()
     doc = FreeCAD.ActiveDocument
-    
+
     # Set configuration using getter functions (handle precedence internally)
     config.RunSlicer = get_run_slicer()
-    config.PrintFlowDebug = DEBUG  
+    config.PrintFlowDebug = DEBUG
     config.DocDefaults = DOC_DEFAULTS
     config.AppendVersion = get_append_version()
     config.SlicerCommand = get_slicer_path()
     config.fcgroup = "PrintFlow"
-    
+
     # Override with document properties for debug setting only
     if doc and hasattr(doc, 'PrintFlowDebug'):
         config.PrintFlowDebug = doc.PrintFlowDebug
-            
+
     return config
 
 
@@ -2427,10 +2473,10 @@ def run_slicer(op, fn):
               f"SlicerCommand setting.",
               f"Attempted to run: {op.SlicerCommand}")
         return
-    
+
     cmd = [op.SlicerCommand, fn]
     log('Running Slicer: %s' % cmd)
-    
+
     try:
         cp = subprocess.run(cmd, capture_output=True, text=True, check=False)
     except FileNotFoundError:
@@ -2613,7 +2659,7 @@ class PrusaSlicerOutput:
 
             ow = self.tree.objects[object_key]
             omd = list(ow.iprop.items())
-            
+
             # Use ExportPath for naming if available, otherwise fall back to ExportName/label
             delimiter = getattr(self.tree.doc, 'ExportDelimiter', '.')
             if 'ExportPath' in ow.iprop:
@@ -2641,7 +2687,7 @@ class PrusaSlicerOutput:
                 vw = self.tree.objects[volume_key]
                 vmd = list(vw.iprop.items())
                 vol['matrix'], vert, tri = vw.tessellate(self.tree.objects)
-                
+
                 # Use ExportPath for volume naming with container prefix stripping
                 if 'ExportPath' in vw.iprop:
                     volume_name = vw.iprop['ExportPath']
@@ -2828,13 +2874,13 @@ def _validate_document(doc):
         bool: True if valid, False if validation failed
     """
     if not doc:
-        error("No Active Document", 
+        error("No Active Document",
               "PrintFlow requires an active FreeCAD document.\n\n"
               "Please open or create a FreeCAD document and try again.")
         return False
 
     if not doc.Objects:
-        error("Empty Document", 
+        error("Empty Document",
               "The active document contains no objects to export.\n\n"
               "Please add some objects to your document and try again.")
         return False
@@ -2962,7 +3008,7 @@ def main(**kwargs):
     except Exception as e:
         import traceback
         details = traceback.format_exc()
-        error("Export Failed", 
+        error("Export Failed",
               f"PrintFlow export failed with an unexpected error.\n\n"
               f"Error: {e}\n\n"
               f"Please check your document and try again.",
