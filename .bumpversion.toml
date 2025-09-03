@@ -10,10 +10,15 @@ commit_args = "--no-verify"
 
 [[tool.bumpversion.files]]
 filename = "PrintFlow.FCMacro"
-search = "__version__ = \"{current_version}\""
-replace = "__version__ = \"{new_version}\""
+search = "__Version__ = \"{current_version}\""
+replace = "__Version__ = \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "PrintFlow.FCMacro"
+search = "__Date__ = \"{utcnow:%Y-%m-%d}\""
+replace = "__Date__ = \"{utcnow:%Y-%m-%d}\""
 
 [[tool.bumpversion.files]]
 filename = "docs/PrintFlowManual.md"
-search = "Version {current_version}"
-replace = "Version {new_version}"
+search = "*This manual covers PrintFlow version {current_version}*"
+replace = "*This manual covers PrintFlow version {new_version}*"
