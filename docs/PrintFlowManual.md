@@ -8,10 +8,10 @@
 *From FreeCAD to Slicing in One Click*
 </div>
 
-* **One-click export** from FreeCAD to your slicer  
-* **Smart object detection** - exports what you actually want to print  
+* **One-click export** from FreeCAD to your slicer
+* **Smart object detection** - exports what you actually want to print
 * **Build Plate Layout** - use FreeCAD Assemblies to place your parts
-* **Embedded Print Settings** - no more reconfiguring every iteration  
+* **Embedded Print Settings** - no more reconfiguring every iteration
 * **Multi-Material** - set extruder and other settings per-object
 * **Designed Support** - multi-shape objects make designed supports easy
 
@@ -23,7 +23,7 @@
 
 ### Getting Started
 1. **Installation**
-2. **Quick Start**  
+2. **Quick Start**
 3. **Basic Concepts**
 
 ---
@@ -36,7 +36,7 @@
 - FreeCAD 1.0 or later
 - Slicer (you don't *need* it, but then you probably don't need this
   macro)
-  
+
 **Installation Steps:**
 1. Download `PrintFlow.FCMacro` from the FreeCAD macro repository
 2. Copy to your FreeCAD macro directory:
@@ -51,7 +51,7 @@ On first use, PrintFlow will prompt you to configure your slicer:
 - **Slicer Path**: Browse to your slicer executable (e.g., PrusaSlicer.exe)
 - **Default Behavior**: Choose whether to auto-launch slicer and append version numbers
 - All settings are saved automatically in FreeCAD Parameters
-- To change later: Edit > Preferences > General > Parameter Editor > 
+- To change later: Edit > Preferences > General > Parameter Editor >
   BaseApp/Preferences/Macros/PrintFlow
 
 ### 2. Quick Start
@@ -89,7 +89,7 @@ apply to its contents.
 For complex projects needing fine-grained control:
 
 1. **Right-click object** → Properties → Add Property
-2. **Add "Export" property** (Boolean) in "Export" group  
+2. **Add "Export" property** (Boolean) in "Export" group
 3. **Set Export = True** to include, **Export = False** to exclude
 4. **Run PrintFlow**
 
@@ -107,7 +107,7 @@ This method gives you precise control over what exports, especially useful for l
 **Organization Structures:**
 PrintFlow intelligently uses FreeCAD's organizational structures:
 - **Assemblies**: Contents become separate slicer objects (great for print layout and part orientation)
-- **Parts (StdPart)**: Become slicer objects with multi-part support (useful for multiple extruders or designed supports)  
+- **Parts (StdPart)**: Become slicer objects with multi-part support (useful for multiple extruders or designed supports)
 - **Groups**: FreeCAD organization only (no impact on output structure)
 
 **Property System:**
@@ -122,7 +122,7 @@ This keeps configuration simple while allowing fine control when needed.
 PrintFlow uses a three-level configuration system for maximum flexibility:
 
 1. **FreeCAD Parameters**: Global preferences stored in FreeCAD's parameter system
-2. **Document Properties**: Properties added to specific FreeCAD documents  
+2. **Document Properties**: Properties added to specific FreeCAD documents
 3. **Object Properties**: Properties added to individual objects for fine-grained control
 
 **Property Groups:**
@@ -211,7 +211,7 @@ For power users who need fine control over export behavior (all use "PrintFlow" 
   their parent container.  By default, the "Tree" inheritance has
   priority, but this can be overridden at the document level.  These
   properties can also be explicitly set on the Link itself.
-  
+
 - **`ExportDelimiter` (String, default: ".")**: Character used to
   separate levels in export paths. For example, "Car.FRWheel" uses "."
   as the delimiter. Change this if you need different path separators.
@@ -227,7 +227,7 @@ For power users who need fine control over export behavior (all use "PrintFlow" 
   - `{BasePath}`: Document filename without extension
   - `{DirName}`: Document directory
   - `{ExportVersion}`: Version number (when AppendVersion=True)
-  
+
   Example: "{DirName}/exports/{BasePath}-v{ExportVersion}" creates
   organized export paths.
 
@@ -410,4 +410,4 @@ supports it, PrintFlow does, too!
 
 ---
 
-*This manual covers PrintFlow version 1.0.0*
+*This manual covers PrintFlow version 1.1.0*

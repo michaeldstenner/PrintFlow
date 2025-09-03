@@ -2,8 +2,10 @@
 
 # Configuration
 TIMEOUT_SECONDS=10
+APP="FreeCAD_1.1.Weekly"
+#APP="FreeCAD_1.0.1"
 LOG_FILE="PrintFlow.log"
-TEST_SELECTION_FILE="test_selection.tmp"
+TEST_SELECTION_FILE="tests/test_selection.tmp"
 
 # Write test arguments to file if provided
 if [ $# -gt 0 ]; then
@@ -24,7 +26,7 @@ else
 fi
 
 # Start the tests using F12 hotkey
-sendkeys -d 0.01 -a FreeCAD_1.0.1 -c '<c:f12>'
+sendkeys -d 0.01 -a $APP -c '<c:f12>'
 
 # Monitor for completion
 last_activity=$(date +%s)
