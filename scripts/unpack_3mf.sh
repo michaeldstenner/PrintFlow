@@ -29,7 +29,12 @@ for file in "$@"; do
     
     echo "Unpacking '$file' to '$output_dir/'"
     
-    # Create output directory
+    # Remove existing directory if it exists to avoid conflicts
+    if [ -d "$output_dir" ]; then
+        rm -rf "$output_dir"
+    fi
+    
+    # Create fresh output directory
     mkdir -p "$output_dir"
     
     # Unpack the 3MF file (which is a ZIP) into the folder

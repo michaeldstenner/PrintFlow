@@ -59,6 +59,25 @@ macro simply passes properties on to the slicer without understanding
 properties is to set them in your slicer, save the project as a .3mf
 file, unzip it (3MF is a zip file), and explore the files therein.
 
+#### Multi-Slicer Property Compatibility
+
+PrintFlow supports multiple slicer formats (PrusaSlicer, Cura) but does
+**NOT** translate properties between formats. Each slicer format uses its
+own property naming conventions:
+
+- **PrusaSlicer**: Properties like `extruder`, `perimeters`, `fill_density`
+- **Cura**: Properties like `extruder_nr`, `wall_line_count`, `infill_sparse_density`
+
+Users should set properties using the naming convention appropriate for
+their target slicer. PrintFlow will pass all properties through unchanged
+to the 3MF output, with appropriate namespace formatting applied during
+file generation. This approach:
+
+1. **Preserves user intent** - No automatic translation means no surprises
+2. **Maintains compatibility** - Both slicers can coexist in the same document
+3. **Supports future formats** - New slicer formats work without code changes
+4. **Enables mixed workflows** - Different objects can target different slicers
+
 ## Export Processing Architecture
 
 ### Wrapper Tree System

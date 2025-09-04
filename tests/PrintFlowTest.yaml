@@ -387,3 +387,59 @@ tests:
       PrintFlowTest: {'AppendVersion': true, 'ExportVersion': 10}
     expected_structure:
       "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
+
+  cura_basic_export:
+    name: "Basic Cura Export"
+    description: >
+        Test basic Cura export functionality with SlicerFormat='Cura'
+        property set on a simple object.
+    export_settings:
+      Hex: True
+      ExportGroup: False
+    property_settings:
+      Hex: {'SlicerFormat': 'Cura'}
+    expected_structure:
+      Hex: ["Hex"]
+
+  cura_assembly_with_properties:
+    name: "Cura Assembly with Mixed Slicer Properties"
+    description: >
+        Test Cura export of Assembly with various slicer properties
+        including both Cura and PrusaSlicer properties to verify
+        pass-through behavior and multi-slicer compatibility.
+    export_settings:
+      Assembly: True
+      ExportGroup: False
+    property_settings:
+      Assembly: {'SlicerFormat': 'Cura'}
+      MultiObject: {'wall_line_count': 3, 'infill_sparse_density': 25, 'perimeters': 2}
+      Cube003: {'extruder_nr': 2, 'speed_print': 120.0, 'extruder': 2}
+    expected_structure:
+      MultiObject001: ["Hex001", "Cup001"]  # Assembly expands to Link children
+      Cube003: ["Cube003"]
+    expected_properties:
+      MultiObject001: {'cura:wall_line_count': '3', 'cura:infill_sparse_density': '25', 'cura:perimeters': '2'}
+      Hex001: {'cura:wall_line_count': '3', 'cura:infill_sparse_density': '25', 'cura:perimeters': '2'}  # Inherited from MultiObject
+      Cup001: {'cura:wall_line_count': '3', 'cura:infill_sparse_density': '25', 'cura:perimeters': '2'}  # Inherited from MultiObject
+      Cube003: {'cura:extruder_nr': '2', 'cura:speed_print': '120.0', 'cura:extruder': '2'}
+
+  cura_extruder:
+    name: "Cura Extruder Assignment Test"
+    description: >
+        Test Cura extruder assignment with two standalone objects:
+        Hex with extruder_nr=0 (should be Extruder 1 in GUI)
+        Cube with extruder_nr=1 (should be Extruder 2 in GUI)
+        Tests 0-based vs 1-based indexing hypothesis.
+    export_settings:
+      Hex: True
+      Cube: True  
+      ExportGroup: False
+    property_settings:
+      Hex: {'SlicerFormat': 'Cura', 'extruder_nr': 0}
+      Cube: {'SlicerFormat': 'Cura', 'extruder_nr': 1}
+    expected_structure:
+      Hex: ["Hex"]
+      Cube: ["Cube"]
+    expected_properties:
+      Hex: {'cura:extruder_nr': '0'}
+      Cube: {'cura:extruder_nr': '1'}

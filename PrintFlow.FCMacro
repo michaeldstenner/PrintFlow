@@ -2535,7 +2535,7 @@ def determine_slicer_and_objects(export_set, objects,
     for key in export_set:
         # Check container for SlicerFormat
         try:
-            slicers_found.append(objects[key].iprop['SlicerFormat'])
+            slicers_found.add(objects[key].iprop['SlicerFormat'])
         except (KeyError, AttributeError):
             pass
     slicers_found.discard(None)  # Remove None values
@@ -2597,26 +2597,172 @@ class ThreeMFExporter(ABC):
     instance attributes.
     """
     
+    # Standard 3MF Templates (common across all slicers)
+    _RAW_CONTENT_TYPES = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+        <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+        <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+        <Default Extension="png" ContentType="image/png"/>
+      </Types>"""
+
+    _RAW_RELS = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+        <Relationship Target="/Metadata/thumbnail.png" Id="rel-2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>
+      </Relationships>"""
+
+    _RAW_MODEL_METADATA = """
+        <metadata name="{}">{}</metadata>"""
+
+    _RAW_MODEL_OBJECT = """
+          <object id="{id}" type="model">
+            <mesh>
+              <vertices>
+      {vertices}        </vertices>
+              <triangles>
+      {triangles}        </triangles>
+            </mesh>
+          </object>"""
+
+    _RAW_MODEL_VERTICES = """
+                <vertex x="{}" y="{}" z="{}"/>"""
+
+    _RAW_MODEL_TRIANGLES = """
+                <triangle v1="{}" v2="{}" v3="{}"/>"""
+
+    _RAW_MODEL_BUILD = """
+          <item objectid="{id}" transform="{transform}" printable="1"/>"""
+    
     def __init__(self, tree, export_groups):
         self.tree = tree
         self.export_groups = export_groups
         self._auto_clean_templates()
+        # Generate slicer-specific model template
+        self.model_template = self._generate_model_template()
     
     def _auto_clean_templates(self):
         """Auto-convert all _RAW_* class constants to clean *_template instance attrs."""
-        for name, value in self.__class__.__dict__.items():
-            if name.startswith('_RAW_') and isinstance(value, str):
-                template_name = name[5:].lower() + '_template'
-                setattr(self, template_name, self._clean_template(value))
+        # Look through all classes in the MRO to find _RAW_* templates
+        for cls in self.__class__.__mro__:
+            for name, value in cls.__dict__.items():
+                if name.startswith('_RAW_') and isinstance(value, str):
+                    template_name = name[5:].lower() + '_template'
+                    if not hasattr(self, template_name):  # Don't override subclass templates
+                        setattr(self, template_name, self._clean_template(value))
     
     def _clean_template(self, raw_template):
         """Clean template whitespace using standard library."""
         return textwrap.dedent(raw_template.lstrip('\n'))
     
     @abstractmethod
-    def write(self, filename):
-        """Write 3MF file - implemented by subclasses."""
+    def get_model_namespace(self):
+        """Return slicer-specific namespace declarations for the model element."""
         pass
+    
+    @abstractmethod
+    def _generate_objects_and_build(self):
+        """Generate slicer-specific object and build item lists.
+        
+        Returns:
+            tuple: (object_list, build_list) where each is a list of XML strings
+        """
+        pass
+    
+    def _matrix_to_3mf_transform(self, matrix):
+        """Convert FreeCAD Matrix to 3MF transform string.
+        
+        Args:
+            matrix: FreeCAD Matrix object
+            
+        Returns:
+            str: 3MF transform format (row-major 3x4 matrix)
+                 Format: m11 m12 m13 m21 m22 m23 m31 m32 m33 m41 m42 m43
+        """
+        # FreeCAD Matrix is 4x4, 3MF uses first 3 rows, all 4 columns (3x4)
+        # Access matrix elements directly since FreeCAD Matrix isn't subscriptable
+        elements = [
+            matrix.A11, matrix.A12, matrix.A13, matrix.A14,  # Row 1
+            matrix.A21, matrix.A22, matrix.A23, matrix.A24,  # Row 2
+            matrix.A31, matrix.A32, matrix.A33, matrix.A34   # Row 3
+        ]
+        return ' '.join(f'{elem}' for elem in elements)
+    
+    @abstractmethod
+    def _initialize_export(self):
+        """Initialize slicer-specific data structures for export."""
+        pass
+    
+    @abstractmethod
+    def _get_slicer_files(self):
+        """Get slicer-specific files to include in 3MF.
+        
+        Returns:
+            list: List of (filename, content) tuples for slicer-specific files
+        """
+        pass
+    
+    def _write_3mf_model(self):
+        """Common model writing logic using slicer-specific object generation."""
+        # Generate metadata (currently empty, but placeholder for future)
+        metadata = fl(self.model_metadata_template, ())
+        
+        # Get slicer-specific objects and build items  
+        object_list, build_list = self._generate_objects_and_build()
+        
+        # Combine using model template
+        content = self.model_template.format(
+            metadata=metadata,
+            objects=''.join(object_list),
+            build=''.join(build_list)
+        )
+        return "3D/3dmodel.model", content
+    
+    def _generate_model_template(self):
+        """Generate model template with slicer-specific namespace."""
+        return self._clean_template(f"""
+          <?xml version="1.0" encoding="UTF-8"?>
+          <model unit="millimeter" xml:lang="en-US" 
+                 xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+                 {self.get_model_namespace()}>
+          {{metadata}}  <resources>
+          {{objects}}  </resources>
+            <build>
+          {{build}}  </build>
+          </model>""")
+    
+    def _get_standard_files(self):
+        """Get standard 3MF files common to all slicers.
+        
+        Returns:
+            list: List of (filename, content) tuples for standard 3MF files
+        """
+        return [
+            ("[Content_Types].xml", self.content_types_template),
+            ("_rels/.rels", self.rels_template),
+            ("3D/3dmodel.model", self._write_3mf_model()[1])
+        ]
+    
+    def write(self, filename):
+        """Write 3MF file using template method pattern."""
+        from zipfile import ZipFile, ZIP_DEFLATED, ZipInfo
+        
+        # Initialize slicer-specific data structures
+        self._initialize_export()
+        
+        log(f'writing to: {filename}')
+        
+        with ZipFile(filename, 'w', ZIP_DEFLATED) as zf:
+            # Write standard 3MF files
+            for archive, content in self._get_standard_files():
+                zi = ZipInfo(archive)
+                zf.writestr(zi, content)
+            
+            # Write slicer-specific files
+            for archive, content in self._get_slicer_files():
+                zi = ZipInfo(archive)
+                zf.writestr(zi, content)
 
 
 class PrusaSlicerExporter(ThreeMFExporter):
@@ -2654,53 +2800,7 @@ class PrusaSlicerExporter(ThreeMFExporter):
                       object_name -> [volume_names]
     """
 
-    # PrusaSlicer 3MF Templates (auto-cleaned to *_template attributes)
-    _RAW_CONTENT_TYPES = """
-      <?xml version="1.0" encoding="UTF-8"?>
-      <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-        <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-        <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
-        <Default Extension="png" ContentType="image/png"/>
-      </Types>"""
-
-    _RAW_RELS = """
-      <?xml version="1.0" encoding="UTF-8"?>
-      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-        <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
-        <Relationship Target="/Metadata/thumbnail.png" Id="rel-2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>
-      </Relationships>"""
-
-    _RAW_MODEL = """
-      <?xml version="1.0" encoding="UTF-8"?>
-      <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">
-      {metadata}  <resources>
-      {objects}  </resources>
-        <build>
-      {build}  </build>
-      </model>"""
-
-    _RAW_MODEL_METADATA = """
-        <metadata name="{}">{}</metadata>"""
-
-    _RAW_MODEL_OBJECT = """
-          <object id="{id}" type="model">
-            <mesh>
-              <vertices>
-      {vertices}        </vertices>
-              <triangles>
-      {triangles}        </triangles>
-            </mesh>
-          </object>"""
-
-    _RAW_MODEL_VERTICES = """
-                <vertex x="{}" y="{}" z="{}"/>"""
-
-    _RAW_MODEL_TRIANGLES = """
-                <triangle v1="{}" v2="{}" v3="{}"/>"""
-
-    _RAW_MODEL_BUILD = """
-          <item objectid="{id}" transform="{transform}" printable="1"/>"""
-
+    # PrusaSlicer-specific 3MF Templates
     _RAW_SLIC3R_PE_MODEL = """
       <?xml version="1.0" encoding="UTF-8"?>
       <config>
@@ -2722,22 +2822,19 @@ class PrusaSlicerExporter(ThreeMFExporter):
     _RAW_SLIC3R_PE_VOLUME_METADATA = """
             <metadata type="volume" key="{}" value="{}"/>"""
 
-    def write(self, filename):
-        """Write 3MF file compatible with PrusaSlicer.
+    def get_model_namespace(self):
+        """Return PrusaSlicer-specific namespace declaration."""
+        return 'xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"'
 
-        Args:
-            filename: Path to output .3mf file
-        """
-        with ZipFile(filename, 'w', ZIP_DEFLATED) as zf:
-            self._write_3mf_init(self.export_groups)
-            log('writing to: %s' % filename)
-            for f in [
-                    self._write_3mf_content_types, self._write_3mf_rels,
-                    self._write_3mf_model, self._write_3mf_slic3r_pe_model
-            ]:
-                archive, content = f()
-                zi = ZipInfo(archive)
-                zf.writestr(zi, content)
+    def _initialize_export(self):
+        """Initialize PrusaSlicer export by building _slic3r_objects structure."""
+        self._write_3mf_init(self.export_groups)
+    
+    def _get_slicer_files(self):
+        """Get PrusaSlicer-specific files (Slic3r_PE_model.config)."""
+        return [
+            self._write_3mf_slic3r_pe_model()
+        ]
 
     def _write_3mf_init(self, containers):
         """Initialize 3MF object data from containers & volumes.
@@ -2807,15 +2904,8 @@ class PrusaSlicerExporter(ThreeMFExporter):
                 volumes.append(vol)
             self._slic3r_objects.append(o)
 
-    def _write_3mf_content_types(self):
-        return "[Content_Types].xml", self.content_types_template
-
-    def _write_3mf_rels(self):
-        return "_rels/.rels", self.rels_template
-
-    def _write_3mf_model(self):
-        metadata = fl(self.model_metadata_template, ())
-
+    def _generate_objects_and_build(self):
+        """Generate PrusaSlicer-specific objects and build items using volume structure."""
         object_list = []
         build_list = []
         for obj in self._slic3r_objects:
@@ -2825,14 +2915,10 @@ class PrusaSlicerExporter(ThreeMFExporter):
                 'vertices': fl(self.model_vertices_template, obj['vertices']),
                 'triangles': fl(self.model_triangles_template, obj['triangles'])
             }
-            #print(t.keys())
             object_list.append(self.model_object_template.format(**t))
             build_list.append(self.model_build_template.format(**t))
-
-        content = self.model_template.format(metadata=metadata,
-                                        objects=''.join(object_list),
-                                        build=''.join(build_list))
-        return "3D/3dmodel.model", content
+        
+        return object_list, build_list
 
     def _write_3mf_slic3r_pe_model(self):
         object_list = []
@@ -2858,8 +2944,241 @@ class PrusaSlicerExporter(ThreeMFExporter):
         return "Metadata/Slic3r_PE_model.config", content
 
 
+class CuraExporter(ThreeMFExporter):
+    """Cura-compatible 3MF file writer.
 
-EXPORT_CLASSES = {'PrusaSlicer': PrusaSlicerExporter}
+    This class handles all 3MF file generation for Cura using container/component
+    structure. It accesses the tree data structure in the same way as
+    PrusaSlicerExporter but generates Cura-specific XML structures.
+
+    Key Differences from PrusaSlicer:
+    - Uses container objects with <components> instead of volumes
+    - Uses cura: namespace for metadata instead of slic3r:
+    - Individual shapes become separate objects referenced by containers
+    - Settings are embedded in XML metadata instead of external config
+
+    Known/Supported Cura Parameters (with cura: prefix):
+      - extruder_nr (int) - extruder assignment (0, 1, 2...)
+      - infill_sparse_density (int) - infill percentage (20 = 20%)
+      - infill_pattern (str) - zigzag, grid, lines, triangles, etc.
+      - wall_line_count (int) - perimeter count
+      - speed_print (float) - print speed in mm/s
+      - drop_to_buildplate (bool) - drop to buildplate flag
+      - print_order (int) - printing sequence
+      - support_mesh (bool) - support material flag
+
+    Args:
+        tree: FCObjectTree instance with processed objects
+        export_groups: Dict from tree.get_export_groups() mapping
+                      object_name -> [volume_names]
+    """
+
+    # Cura-specific object templates (override base class)
+    _RAW_MODEL_OBJECT = """
+          <object id="{id}" name="{name}" type="model">
+            <metadatagroup>
+      {metadata}    </metadatagroup>
+            <mesh>
+              <vertices>
+      {vertices}        </vertices>
+              <triangles>
+      {triangles}        </triangles>
+            </mesh>
+          </object>"""
+
+    _RAW_MODEL_CONTAINER = """
+          <object id="{id}" name="{name}" type="model">
+            <metadatagroup>
+      {metadata}    </metadatagroup>
+            <components>
+      {components}    </components>
+          </object>"""
+
+    def get_model_namespace(self):
+        """Return Cura-specific namespace declaration."""
+        return 'xmlns:cura="http://software.ultimaker.com/xml/cura/3mf/2015/10"'
+
+    def _initialize_export(self):
+        """Initialize Cura export by building container/component structure."""
+        self._write_3mf_init(self.export_groups)
+    
+    def _get_slicer_files(self):
+        """Get Cura-specific files for standard 3MF export.
+        
+        Note: After extensive investigation, no universal solution exists for 
+        generating Cura project files that preserve extruder assignments.
+        Cura only respects extruder_nr properties when files include complete
+        printer-specific configurations (machine definitions, materials, etc).
+        
+        Current approach: Generate standard 3MF files with cura:extruder_nr
+        properties. Users import as "models only" and assign extruders manually.
+        """
+        return []
+
+    def _write_3mf_init(self, containers):
+        """Initialize 3MF object data using Cura container/component structure.
+
+        Each PrintFlow container becomes:
+        1. Individual shape objects with mesh data
+        2. A container object that references the shapes via components
+        """
+        self._cura_objects = []
+        self._container_objects = []
+        
+        global_object_id = 0
+        
+        for container_key, shape_list in containers.items():
+            debug(f'writing container/shapes: {container_key}, {shape_list}')
+
+            container_wrapper = self.tree.objects[container_key]
+            
+            # Use ExportPath for naming if available
+            delimiter = getattr(self.tree.doc, 'ExportDelimiter', '.')
+            if 'ExportPath' in container_wrapper.iprop:
+                container_name = container_wrapper.iprop['ExportPath']
+            else:
+                container_name = container_wrapper.iprop.get('ExportName', container_wrapper.label)
+            
+            # Create individual shape objects first
+            shape_object_ids = []
+            for shape_key in shape_list:
+                global_object_id += 1
+                shape_wrapper = self.tree.objects[shape_key]
+                
+                # Generate shape geometry
+                matrix, vertices, triangles = shape_wrapper.tessellate(self.tree.objects)
+                transform_str = self._matrix_to_3mf_transform(matrix)
+                
+                # Use ExportPath for shape naming with container prefix stripping
+                if 'ExportPath' in shape_wrapper.iprop:
+                    shape_name = shape_wrapper.iprop['ExportPath']
+                    # Strip container prefix if shape path starts with container path + delimiter
+                    if shape_name.startswith(container_name + delimiter):
+                        shape_name = shape_name[len(container_name + delimiter):]
+                else:
+                    shape_name = shape_wrapper.iprop.get('ExportName', shape_wrapper.label)
+                
+                # Convert properties to Cura metadata format
+                cura_metadata = self._format_properties_for_cura(shape_wrapper.iprop)
+                
+                shape_obj = {
+                    'id': global_object_id,
+                    'name': shape_name,
+                    'type': 'model',
+                    'vertices': vertices,
+                    'triangles': triangles,
+                    'metadata': cura_metadata
+                }
+                self._cura_objects.append(shape_obj)
+                shape_object_ids.append(global_object_id)
+            
+            # Create container object that references the shapes
+            if len(shape_object_ids) > 1:  # Only create container for multi-shape objects
+                global_object_id += 1
+                container_metadata = self._format_properties_for_cura(container_wrapper.iprop)
+                
+                container_obj = {
+                    'id': global_object_id,
+                    'name': container_name,
+                    'type': 'model',
+                    'component_ids': shape_object_ids,
+                    'metadata': container_metadata,
+                    'transform': "1 0 0 0 1 0 0 0 1 0 0 0"  # Identity - vertices already transformed
+                }
+                self._container_objects.append(container_obj)
+
+    def _format_properties_for_cura(self, properties):
+        """Format properties for Cura 3MF output with cura: namespace prefix.
+        
+        Does pure pass-through of all properties, adding cura: prefix for
+        3MF namespace formatting.
+        """
+        cura_metadata = []
+        
+        # Pass through all properties with cura: namespace formatting
+        for prop_key, prop_value in properties.items():
+            # Add cura: prefix if not already present
+            if prop_key.startswith('cura:'):
+                cura_key = prop_key
+            else:
+                cura_key = f'cura:{prop_key}'
+            cura_metadata.append((cura_key, str(prop_value)))
+        
+        # Add default Cura properties
+        cura_metadata.append(('cura:drop_to_buildplate', 'True'))
+        if not any(key == 'cura:print_order' for key, _ in cura_metadata):
+            cura_metadata.append(('cura:print_order', '1'))
+            
+        return cura_metadata
+
+
+    def _generate_objects_and_build(self):
+        """Generate Cura-specific objects and build items using container/component structure."""
+        object_list = []
+        build_list = []
+        
+        # Generate individual shape objects using templates
+        for shape_obj in self._cura_objects:
+            metadata_xml = ''.join(
+                self.model_metadata_template.format(key, value)
+                for key, value in shape_obj['metadata']
+            )
+            
+            t = {
+                'id': shape_obj['id'],
+                'name': shape_obj['name'],
+                'metadata': metadata_xml,
+                'vertices': fl(self.model_vertices_template, shape_obj['vertices']),
+                'triangles': fl(self.model_triangles_template, shape_obj['triangles'])
+            }
+            object_list.append(self.model_object_template.format(**t))
+        
+        # Generate container objects using container template
+        for container_obj in self._container_objects:
+            metadata_xml = ''.join(
+                self.model_metadata_template.format(key, value)
+                for key, value in container_obj['metadata']
+            )
+            
+            components_xml = ''.join(
+                f'        <component objectid="{comp_id}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />\n'
+                for comp_id in container_obj['component_ids']
+            )
+            
+            t = {
+                'id': container_obj['id'],
+                'name': container_obj['name'],
+                'metadata': metadata_xml,
+                'components': components_xml
+            }
+            object_list.append(self.model_container_template.format(**t))
+            
+            # Add container to build section
+            build_t = {
+                'id': container_obj['id'],
+                'transform': container_obj['transform']
+            }
+            build_list.append(self.model_build_template.format(**build_t))
+        
+        # For single-shape containers, add individual objects to build section
+        for shape_obj in self._cura_objects:
+            # Check if this shape is part of any container
+            is_in_container = any(
+                shape_obj['id'] in container['component_ids']
+                for container in self._container_objects
+            )
+            if not is_in_container:
+                build_t = {
+                    'id': shape_obj['id'],
+                    'transform': "1 0 0 0 1 0 0 0 1 0 0 0"  # Identity - vertices already transformed
+                }
+                build_list.append(self.model_build_template.format(**build_t))
+        
+        return object_list, build_list
+
+
+
+EXPORT_CLASSES = {'PrusaSlicer': PrusaSlicerExporter, 'Cura': CuraExporter}
 
 
 # END 3MF Export Framework
