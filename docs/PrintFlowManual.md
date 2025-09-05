@@ -418,7 +418,7 @@ PrintFlow supports exporting 3MF files compatible with Cura, but there are some 
 
 **Automatic Object Placement:**
 - Cura automatically repositions objects on the build plate when opening 3MF files
-- Objects may appear rotated or translated from their FreeCAD positions for optimal printing layout  
+- Objects may appear rotated or translated from their FreeCAD positions for optimal printing layout
 - Use `Edit > Undo` immediately after opening to restore original positions if needed
 
 **Extruder Assignment:**
@@ -429,7 +429,7 @@ PrintFlow supports exporting 3MF files compatible with Cura, but there are some 
 ### Technical Details
 
 PrintFlow generates standard 3MF files for Cura (not project files) because:
-- Cura project files require complete printer-specific configurations  
+- Cura project files require complete printer-specific configurations
 - No universal solution exists for preserving all settings across different printer setups
 - Standard 3MF files maintain geometry and can be imported into any Cura installation
 

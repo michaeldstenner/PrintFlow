@@ -36,7 +36,7 @@ All notable changes to PrintFlow will be documented in this file.
 
 ### Testing and Quality Assurance
 - **Comprehensive Multi-Slicer Testing**
-  - All 33 tests pass on both PrusaSlicer and Cura export paths  
+  - All 33 tests pass on both PrusaSlicer and Cura export paths
   - Cura-specific tests: basic export, assembly properties, extruder assignment
   - Property inheritance validation across both slicer formats
 
@@ -48,11 +48,11 @@ All notable changes to PrintFlow will be documented in this file.
 ### Documentation
 - **Complete User Manual Updates**
   - Added Cura Export Notes section explaining auto-placement behavior
-  - Documented extruder assignment limitations and workarounds  
+  - Documented extruder assignment limitations and workarounds
   - Source-code-verified Cura Properties Reference with special vs standard properties
   - Clear explanations of slicer behavior differences
 
-- **Technical Documentation**  
+- **Technical Documentation**
   - Multi-slicer property compatibility guidelines
   - Document vs object property access design decisions
   - Property validation system architecture
@@ -100,7 +100,7 @@ All notable changes to PrintFlow will be documented in this file.
 - ExportContainer/ExportShape force mode overrides
 - Advanced slicer property passthrough for PrusaSlicer metadata
 
-### Fixed  
+### Fixed
 - first release
 
 ### Technical Details
