@@ -2,6 +2,66 @@
 
 All notable changes to PrintFlow will be documented in this file.
 
+## [1.2.0] - 2025-01-xx
+
+### Major Features Added
+- **Complete Cura 3MF Export Support**
+  - Full container/component architecture implementation for Cura compatibility
+  - Source-code-verified property support with cura: namespace formatting
+  - Pure property pass-through approach without slicer translation
+  - Comprehensive Cura documentation with verified property reference
+
+- **Enhanced Testing Infrastructure**
+  - Achieved perfect 33/33 test coverage including all Cura functionality
+  - Added expect_error support to test framework for negative testing
+  - Intelligent FreeCAD auto-detection in runmacro.sh script
+  - Fixed slicer_format_override test to validate proper error handling
+
+- **Document Property Validation System**
+  - Centralized RECOGNIZED_DOCUMENT_PROPERTIES registry
+  - Startup validation with info-level logging for recognized properties
+  - Warning-level logging for unrecognized properties (catches typos)
+  - Single source of truth prevents property maintenance drift
+
+### Architecture Improvements
+- **Consistent Geometry Transformations**
+  - Unified transformation logic between PrusaSlicer and Cura exporters
+  - Fixed geometry positioning issues using pre-transformed vertices
+  - Preserved matrix transformation methods for future enhancement
+
+- **Design Decision Documentation**
+  - Established document vs object property access patterns in LOGIC.md
+  - Clarified that objects[None] represents tree root, not document wrapper
+  - Documents accessed directly via FreeCAD.ActiveDocument for efficiency
+
+### Testing and Quality Assurance
+- **Comprehensive Multi-Slicer Testing**
+  - All 33 tests pass on both PrusaSlicer and Cura export paths
+  - Cura-specific tests: basic export, assembly properties, extruder assignment
+  - Property inheritance validation across both slicer formats
+
+- **Enhanced Development Tools**
+  - runmacro.sh with intelligent FreeCAD version detection and auto-selection
+  - Support for explicit version override with -f flag
+  - Improved error messages and user guidance
+
+### Documentation
+- **Complete User Manual Updates**
+  - Added Cura Export Notes section explaining auto-placement behavior
+  - Documented extruder assignment limitations and workarounds
+  - Source-code-verified Cura Properties Reference with special vs standard properties
+  - Clear explanations of slicer behavior differences
+
+- **Technical Documentation**
+  - Multi-slicer property compatibility guidelines
+  - Document vs object property access design decisions
+  - Property validation system architecture
+
+### Backward Compatibility
+- All existing PrusaSlicer workflows unchanged
+- No breaking changes to property inheritance or export behavior
+- Default slicer target remains PrusaSlicer for existing users
+
 ## [1.1.0] - 2025-09-03
 
 ### Added
@@ -40,7 +100,7 @@ All notable changes to PrintFlow will be documented in this file.
 - ExportContainer/ExportShape force mode overrides
 - Advanced slicer property passthrough for PrusaSlicer metadata
 
-### Fixed  
+### Fixed
 - first release
 
 ### Technical Details

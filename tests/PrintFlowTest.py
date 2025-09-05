@@ -294,6 +294,106 @@ def extract_slicer_properties(config_root):
 
     return properties
 
+def parse_cura_objects(model_root):
+    """Parse Cura 3MF container/component structure from XML.
+    
+    Returns:
+        tuple: (structure_dict, properties_dict)
+        - structure_dict: {container_name: [volume_names]}  
+        - properties_dict: {object_name: {property_name: value}}
+    """
+    structure = {}
+    properties = {}
+    
+    ns = '{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}'
+    
+    # Find all objects in the model
+    objects = model_root.findall(f'.//{ns}object')
+    PrintFlow.debug(f"Found {len(objects)} objects in Cura model")
+    
+    # Separate shape objects (with mesh) from container objects (with components)
+    shape_objects = {}  # id -> {name, metadata}
+    container_objects = {}  # id -> {name, metadata, component_ids}
+    build_items = set()  # ids of objects in build section
+    
+    for obj in objects:
+        obj_id = obj.get('id')
+        obj_name = obj.get('name', f'Object{obj_id}')
+        obj_type = obj.get('type', 'model')
+        
+        PrintFlow.debug(f"  Object {obj_id}: name='{obj_name}', type={obj_type}")
+        
+        # Parse metadata
+        metadata = {}
+        metadatagroup = obj.find(f'{ns}metadatagroup')
+        if metadatagroup is not None:
+            for meta in metadatagroup.findall(f'{ns}metadata'):
+                key = meta.get('name', '')
+                value = meta.text or ''
+                # Store all metadata as-is (both cura: and non-cura properties)
+                metadata[key] = value
+        
+        # Check if this is a container (has components) or shape (has mesh)
+        components = obj.find(f'{ns}components')
+        mesh = obj.find(f'{ns}mesh')
+        
+        if components is not None:
+            # Container object
+            component_ids = []
+            for comp in components.findall(f'{ns}component'):
+                comp_id = comp.get('objectid')
+                if comp_id:
+                    component_ids.append(comp_id)
+            
+            container_objects[obj_id] = {
+                'name': obj_name,
+                'metadata': metadata,
+                'component_ids': component_ids
+            }
+            PrintFlow.debug(f"    Container with {len(component_ids)} components: {component_ids}")
+            
+        elif mesh is not None:
+            # Shape object
+            shape_objects[obj_id] = {
+                'name': obj_name, 
+                'metadata': metadata
+            }
+            PrintFlow.debug(f"    Shape object")
+        
+        # Store properties for this object
+        if metadata:
+            properties[obj_name] = metadata
+    
+    # Parse build section to see which objects are actually printed
+    build = model_root.find(f'.//{ns}build')
+    if build is not None:
+        for item in build.findall(f'{ns}item'):
+            build_id = item.get('objectid')
+            if build_id:
+                build_items.add(build_id)
+        PrintFlow.debug(f"Build section references: {sorted(build_items)}")
+    
+    # Build structure mapping: container_name -> [shape_names]
+    for obj_id, container in container_objects.items():
+        if obj_id in build_items:
+            # This container is in the build - map its components
+            shape_names = []
+            for comp_id in container['component_ids']:
+                if comp_id in shape_objects:
+                    shape_names.append(shape_objects[comp_id]['name'])
+            
+            structure[container['name']] = shape_names
+            PrintFlow.debug(f"Container '{container['name']}' -> {shape_names}")
+    
+    # Add standalone shapes (not part of any container)
+    for obj_id, shape in shape_objects.items():
+        if obj_id in build_items:
+            # This shape is directly in build section
+            structure[shape['name']] = [shape['name']]
+            PrintFlow.debug(f"Standalone shape '{shape['name']}' -> ['{shape['name']}']")
+    
+    return structure, properties
+
 def analyze_3mf_structure(filename):
     """Analyze 3MF file structure and return object->volumes mapping."""
     try:
@@ -313,35 +413,64 @@ def analyze_3mf_structure(filename):
             analysis_header.append(model_xml[:300])
             PrintFlow.debug('\n'.join(analysis_header))
 
-            config_path = 'Metadata/Slic3r_PE_model.config'
-            if config_path in zf.namelist():
-                config_xml = zf.read(config_path).decode('utf-8')
-                config_root = ET.fromstring(config_xml)
-                config_info = [
-                    f"PrusaSlicer metadata found ({len(config_xml)} chars)",
-                    "Config XML (first 500 chars):",
-                    config_xml[:500]
-                ]
-                PrintFlow.debug('\n'.join(config_info))
+            # Detect format by checking namespace in XML
+            cura_namespace = 'xmlns:cura="http://software.ultimaker.com/xml/cura/3mf/2015/10"'
+            slic3r_namespace = 'xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"'
+            
+            is_cura_format = cura_namespace in model_xml
+            is_slic3r_format = slic3r_namespace in model_xml
+            
+            if is_slic3r_format:
+                # PrusaSlicer format - use external config file
+                config_path = 'Metadata/Slic3r_PE_model.config'
+                if config_path in zf.namelist():
+                    config_xml = zf.read(config_path).decode('utf-8')
+                    config_root = ET.fromstring(config_xml)
+                    config_info = [
+                        f"PrusaSlicer metadata found ({len(config_xml)} chars)",
+                        "Config XML (first 500 chars):",
+                        config_xml[:500]
+                    ]
+                    PrintFlow.debug('\n'.join(config_info))
 
-                structure, all_objects, all_volumes, _ = \
-                    parse_prusaslicer_objects(config_root)
+                    structure, all_objects, all_volumes, _ = \
+                        parse_prusaslicer_objects(config_root)
 
+                    summary = [
+                        "=== SUMMARY ===",
+                        f"All objects found: {all_objects}",
+                        f"All volumes found: {all_volumes}",
+                        f"Final structure: {structure}",
+                        "=== END 3MF ANALYSIS ==="
+                    ]
+                    PrintFlow.debug('\n'.join(summary))
+
+                    properties = extract_slicer_properties(config_root)
+                    PrintFlow.debug(f"All properties found: {properties}")
+
+                    return structure, properties
+                else:
+                    PrintFlow.debug("PrusaSlicer namespace found but no config file")
+                    return {}, {}
+                    
+            elif is_cura_format:
+                # Cura format - parse embedded metadata from main XML
+                PrintFlow.debug("Cura format detected - parsing container/component structure")
+                structure, properties = parse_cura_objects(model_root)
+                
                 summary = [
                     "=== SUMMARY ===",
-                    f"All objects found: {all_objects}",
-                    f"All volumes found: {all_volumes}",
                     f"Final structure: {structure}",
                     "=== END 3MF ANALYSIS ==="
                 ]
                 PrintFlow.debug('\n'.join(summary))
-
-                properties = extract_slicer_properties(config_root)
                 PrintFlow.debug(f"All properties found: {properties}")
-
+                
                 return structure, properties
+                
             else:
-                PrintFlow.debug("No PrusaSlicer metadata found in 3MF")
+                # Unknown or standard 3MF format
+                PrintFlow.debug("No slicer-specific metadata found in 3MF")
                 ns = '{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}'
                 objects = model_root.findall(f'.//{ns}object')
                 PrintFlow.debug(f"Found {len(objects)} objects in main model")
@@ -479,9 +608,18 @@ def get_key_objects_for_inspection(test_name, test_config, result):
 def execute_printflow_with_checkpoints(test_name, test_config):
     """Execute PrintFlow and handle checkpoint inspection."""
     PrintFlow.debug("Running PrintFlow main()...")
+    
+    # Check if test expects an error
+    expected_error = test_config.get('expect_error')
+    
     try:
         result = PrintFlow.main(RunSlicer=False)
         PrintFlow.debug("PrintFlow main() completed successfully")
+        
+        # If we expected an error but didn't get one, that's a test failure
+        if expected_error:
+            PrintFlow.debug(f"TEST FAILURE: Expected error '{expected_error}' but PrintFlow succeeded")
+            return False
 
         key_objects = get_key_objects_for_inspection(test_name, test_config,
                                                      result)
@@ -502,9 +640,21 @@ def execute_printflow_with_checkpoints(test_name, test_config):
         ]
         for line in traceback.format_exc().strip().split('\n'):
             exception_details.append(f"  {line}")
-        exception_details.append("PrintFlow main() failed due to exception")
-        PrintFlow.debug('\n'.join(exception_details))
-        return False
+            
+        # Check if this is an expected error
+        if expected_error:
+            error_message = str(e)
+            if expected_error in error_message:
+                PrintFlow.debug(f"SUCCESS: Got expected error: {expected_error}")
+                return True
+            else:
+                exception_details.append(f"TEST FAILURE: Expected error '{expected_error}' but got '{error_message}'")
+                PrintFlow.debug('\n'.join(exception_details))
+                return False
+        else:
+            exception_details.append("PrintFlow main() failed due to exception")
+            PrintFlow.debug('\n'.join(exception_details))
+            return False
 
 def compare_test_results(test_name, test_config, temp_3mf):
     """Compare actual vs expected test results."""
@@ -608,7 +758,10 @@ def run_single_test(test_name, test_config):
     if not execute_printflow_with_checkpoints(test_name, test_config):
         return False
 
-    if os.path.exists(TEST_3MF_PATH):
+    # For error-expected tests, we've already validated success in execute_printflow_with_checkpoints
+    if test_config.get('expect_error'):
+        result = True  # Success was already determined by getting expected error
+    elif os.path.exists(TEST_3MF_PATH):
         PrintFlow.debug(f"SUCCESS: 3MF file created: {TEST_3MF_PATH}")
         result = compare_test_results(test_name, test_config, TEST_3MF_PATH)
         PrintFlow.debug(f"KEEPING 3MF FILE FOR DEBUGGING: {TEST_3MF_PATH}")

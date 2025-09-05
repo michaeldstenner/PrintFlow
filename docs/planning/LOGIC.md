@@ -59,6 +59,25 @@ macro simply passes properties on to the slicer without understanding
 properties is to set them in your slicer, save the project as a .3mf
 file, unzip it (3MF is a zip file), and explore the files therein.
 
+#### Multi-Slicer Property Compatibility
+
+PrintFlow supports multiple slicer formats (PrusaSlicer, Cura) but does
+**NOT** translate properties between formats. Each slicer format uses its
+own property naming conventions:
+
+- **PrusaSlicer**: Properties like `extruder`, `perimeters`, `fill_density`
+- **Cura**: Properties like `extruder_nr`, `wall_line_count`, `infill_sparse_density`
+
+Users should set properties using the naming convention appropriate for
+their target slicer. PrintFlow will pass all properties through unchanged
+to the 3MF output, with appropriate namespace formatting applied during
+file generation. This approach:
+
+1. **Preserves user intent** - No automatic translation means no surprises
+2. **Maintains compatibility** - Both slicers can coexist in the same document
+3. **Supports future formats** - New slicer formats work without code changes
+4. **Enables mixed workflows** - Different objects can target different slicers
+
 ## Export Processing Architecture
 
 ### Wrapper Tree System
@@ -460,3 +479,33 @@ MyProject/
 - Existing documents without `ExportSlicer` properties continue working unchanged
 - Default slicer target remains PrusaSlicer
 - All existing property and inheritance behavior preserved
+
+## Data Structure Design Decisions
+
+### Document vs Object Property Access
+
+**Design Principle**: Documents and FreeCAD objects are accessed using different patterns that reflect their fundamental differences.
+
+**Document Properties** (configuration, global settings):
+- **Access Pattern**: Direct via `FreeCAD.ActiveDocument.PropertyName`
+- **Examples**: `SlicerFormat`, `ExportDelimiter`, `AppendVersion`, `PrintFlowDebug`
+- **Rationale**: Documents are containers that hold configuration. Direct access is simple, efficient, and matches FreeCAD's API design.
+
+**Object Properties** (geometry, per-object settings):
+- **Access Pattern**: Through FCObjectTree via `objects[key].iprop['PropertyName']`  
+- **Examples**: `Export`, `ExportName`, `ExportPath`, slicer settings
+- **Rationale**: Objects are wrapped to enable property inheritance, tree relationships, and unified processing.
+
+**Tree Structure**: 
+- `objects[None]` represents the tree root (top-level container), not the document itself
+- The document does not participate in the parent/child object hierarchy
+- Tree relationships are between FreeCAD objects, not between document and objects
+
+**Property Validation**:
+PrintFlow maintains a centralized registry of recognized document properties (`RECOGNIZED_DOCUMENT_PROPERTIES`) to help users catch typos and understand active settings:
+
+- **Recognized properties**: Logged at info level during startup
+- **Unrecognized properties**: Logged at warn level (potential typos in PrintFlow group)
+- **Registry maintenance**: Add new properties to the registry when implementing new features
+
+This separation keeps the codebase conceptually clean and operationally efficient while matching FreeCAD's natural API patterns.
