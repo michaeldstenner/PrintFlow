@@ -2673,6 +2673,10 @@ class ThreeMFExporter(ABC):
     def _matrix_to_3mf_transform(self, matrix):
         """Convert FreeCAD Matrix to 3MF transform string.
         
+        FUTURE: This method is preserved for eventual migration from vertex
+        transformation to matrix-based transformations in 3MF files.
+        Currently unused but represents the cleaner approach.
+        
         Args:
             matrix: FreeCAD Matrix object
             
@@ -3045,9 +3049,8 @@ class CuraExporter(ThreeMFExporter):
                 global_object_id += 1
                 shape_wrapper = self.tree.objects[shape_key]
                 
-                # Generate shape geometry
+                # Generate shape geometry - use pre-transformed vertices like PrusaSlicer
                 matrix, vertices, triangles = shape_wrapper.tessellate(self.tree.objects)
-                transform_str = self._matrix_to_3mf_transform(matrix)
                 
                 # Use ExportPath for shape naming with container prefix stripping
                 if 'ExportPath' in shape_wrapper.iprop:

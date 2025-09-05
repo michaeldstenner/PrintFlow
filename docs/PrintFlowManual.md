@@ -47,7 +47,7 @@
 
 **First Run Setup:**
 On first use, PrintFlow will prompt you to configure your slicer:
-- **Slicer Format**: Currently only PrusaSlicer is supported (more slicers planned - pull requests welcome!)
+- **Slicer Format**: Supports PrusaSlicer and Cura
 - **Slicer Path**: Browse to your slicer executable (e.g., PrusaSlicer.exe)
 - **Default Behavior**: Choose whether to auto-launch slicer and append version numbers
 - All settings are saved automatically in FreeCAD Parameters
@@ -407,6 +407,62 @@ supports it, PrintFlow does, too!
 | Property | Type | Description | Example Values |
 |----------|------|-------------|----------------|
 | `extruder` | Integer | Extruder assignment | 1, 2, 3, 4 |
+
+---
+
+## Cura Export Notes
+
+PrintFlow supports exporting 3MF files compatible with Cura, but there are some important differences from PrusaSlicer exports:
+
+### Cura-Specific Behaviors
+
+**Automatic Object Placement:**
+- Cura automatically repositions objects on the build plate when opening 3MF files
+- Objects may appear rotated or translated from their FreeCAD positions for optimal printing layout  
+- Use `Edit > Undo` immediately after opening to restore original positions if needed
+
+**Extruder Assignment:**
+- Currently no automated way to preserve extruder assignments in Cura
+- Multi-material prints require manual extruder selection in Cura after import
+- This is a limitation of Cura's project file format requirements
+
+### Technical Details
+
+PrintFlow generates standard 3MF files for Cura (not project files) because:
+- Cura project files require complete printer-specific configurations  
+- No universal solution exists for preserving all settings across different printer setups
+- Standard 3MF files maintain geometry and can be imported into any Cura installation
+
+---
+
+## Cura Properties Reference
+
+**Verified by Source Code Analysis**: These properties are confirmed to work based on Cura's 3MF reader code.
+Add these to objects using the "Slicer" group. PrintFlow passes them through with the `cura:` namespace prefix.
+
+### Special Handling Properties
+These receive custom processing in Cura's 3MF reader:
+
+| Property | Type | Description | Example Values |
+|----------|------|-------------|----------------|
+| `extruder_nr` | Integer | Extruder assignment (0-based) | 0, 1, 2, 3 |
+| `print_order` | Integer | Print sequence | 1, 2, 3 |
+| `drop_to_buildplate` | Boolean | Drop object to build plate | true, false |
+
+### Standard Cura Settings
+These are passed to Cura's setting system if recognized:
+
+| Property | Type | Description | Example Values |
+|----------|------|-------------|----------------|
+| `wall_line_count` | Integer | Wall/perimeter count | 2, 3, 4 |
+| `infill_sparse_density` | Integer | Infill percentage | 15, 20, 100 |
+| `infill_pattern` | String | Infill pattern | "zigzag", "grid", "lines", "triangles" |
+| `speed_print` | Float | Print speed in mm/s | 50.0, 80.0, 120.0 |
+
+### Other Properties
+Any valid Cura setting name should work. If Cura doesn't recognize a property, it's stored in metadata but ignored.
+
+**Note**: Cura uses 0-based extruder numbering (0, 1, 2...) while PrusaSlicer uses 1-based (1, 2, 3...).
 
 ---
 
