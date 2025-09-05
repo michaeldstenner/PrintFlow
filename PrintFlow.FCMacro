@@ -78,8 +78,8 @@ Slicer Setup (for auto-launch):
 __Name__ = "PrintFlow"
 __Comment__ = ("Streamlined 3D Printing Workflow - export FreeCAD to 3MF")
 __Author__ = "Michael Stenner"
-__Version__ = "1.1.0"
-__Date__ = "2025-09-03"
+__Version__ = "1.2.0"
+__Date__ = "2025-09-05"
 __License__ = "MIT"
 __Wiki__ = "https://wiki.freecad.org/Macro_PrintFlow"
 __Icon__ = "PrintFlow.svg"

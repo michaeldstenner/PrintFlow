@@ -466,4 +466,4 @@ Any valid Cura setting name should work. If Cura doesn't recognize a property, i
 
 ---
 
-*This manual covers PrintFlow version 1.1.0*
+*This manual covers PrintFlow version 1.2.0*
