@@ -216,19 +216,16 @@ tests:
       MultiObject: ["MultiObject"]  # Single shape, not container
 
   slicer_format_override:
-    name: "SlicerFormat Per-Object Override"
+    name: "SlicerFormat Invalid Slicer Rejection"
     description: >
-        Test SlicerFormat property overrides default slicer format
-        for specific objects.
+        Test that invalid SlicerFormat values are properly rejected
+        with appropriate error message.
     export_settings:
       Hex001: True
       ExportGroup: False
     property_settings:
       Hex001: {'SlicerFormat': 'CustomSlicer'}
-    expected_structure:
-      "MultiObject.Hex001": ["MultiObject.Hex001"]  # Shape exports directly when container not selected
-    expected_properties:
-      "MultiObject.Hex001": {'SlicerFormat': 'CustomSlicer'}
+    expect_error: "Unsupported slicer: CustomSlicer"
 
   document_runslcer_override:
     name: "Document RunSlicer Override"

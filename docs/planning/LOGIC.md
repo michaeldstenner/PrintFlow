@@ -479,3 +479,33 @@ MyProject/
 - Existing documents without `ExportSlicer` properties continue working unchanged
 - Default slicer target remains PrusaSlicer
 - All existing property and inheritance behavior preserved
+
+## Data Structure Design Decisions
+
+### Document vs Object Property Access
+
+**Design Principle**: Documents and FreeCAD objects are accessed using different patterns that reflect their fundamental differences.
+
+**Document Properties** (configuration, global settings):
+- **Access Pattern**: Direct via `FreeCAD.ActiveDocument.PropertyName`
+- **Examples**: `SlicerFormat`, `ExportDelimiter`, `AppendVersion`, `PrintFlowDebug`
+- **Rationale**: Documents are containers that hold configuration. Direct access is simple, efficient, and matches FreeCAD's API design.
+
+**Object Properties** (geometry, per-object settings):
+- **Access Pattern**: Through FCObjectTree via `objects[key].iprop['PropertyName']`  
+- **Examples**: `Export`, `ExportName`, `ExportPath`, slicer settings
+- **Rationale**: Objects are wrapped to enable property inheritance, tree relationships, and unified processing.
+
+**Tree Structure**: 
+- `objects[None]` represents the tree root (top-level container), not the document itself
+- The document does not participate in the parent/child object hierarchy
+- Tree relationships are between FreeCAD objects, not between document and objects
+
+**Property Validation**:
+PrintFlow maintains a centralized registry of recognized document properties (`RECOGNIZED_DOCUMENT_PROPERTIES`) to help users catch typos and understand active settings:
+
+- **Recognized properties**: Logged at info level during startup
+- **Unrecognized properties**: Logged at warn level (potential typos in PrintFlow group)
+- **Registry maintenance**: Add new properties to the registry when implementing new features
+
+This separation keeps the codebase conceptually clean and operationally efficient while matching FreeCAD's natural API patterns.

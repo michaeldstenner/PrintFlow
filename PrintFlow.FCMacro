@@ -2539,16 +2539,22 @@ def determine_slicer_and_objects(export_set, objects,
         except (KeyError, AttributeError):
             pass
     slicers_found.discard(None)  # Remove None values
+    debug(f"Slicers found from objects: {list(slicers_found)}")
 
     if len(slicers_found) == 1:
         chosen_slicer = list(slicers_found)[0]
         log(f"Single slicer detected from objects: {chosen_slicer}")
     else:
         # Use override, then doc property, then default
-        doc = objects[None].fcobj if None in objects else None
+        doc = FreeCAD.ActiveDocument
+        doc_slicer_format = getattr(doc, 'SlicerFormat', None) if doc else None
+        debug(f"Document slicer selection:")
+        debug(f"  target_slicer_override: {target_slicer_override}")
+        debug(f"  doc: {doc}")
+        debug(f"  doc.SlicerFormat: {doc_slicer_format}")
         chosen_slicer = (
             target_slicer_override
-            or (getattr(doc, 'SlicerFormat', None) if doc else None)
+            or doc_slicer_format
             or "PrusaSlicer")
         if len(slicers_found) == 0:
             debug(
@@ -2580,6 +2586,50 @@ def determine_slicer_and_objects(export_set, objects,
 
     log(f"Final slicer choice: {chosen_slicer}")
     return filtered_set, chosen_slicer
+
+
+def validate_document_properties(doc):
+    """Validate document-level properties and log findings.
+    
+    Logs recognized properties at info level and unrecognized 
+    properties at warn level.
+    """
+    if not doc:
+        return
+        
+    recognized_found = []
+    unrecognized_found = []
+    
+    # Check each property group we recognize
+    for group_name, recognized_props in RECOGNIZED_DOCUMENT_PROPERTIES.items():
+        # Get all properties in this group from the document
+        group_props = []
+        for prop_name in doc.PropertiesList:
+            if hasattr(doc, 'getGroupOfProperty') and \
+               doc.getGroupOfProperty(prop_name) == group_name:
+                group_props.append(prop_name)
+        
+        # Classify properties as recognized or unrecognized
+        for prop_name in group_props:
+            if prop_name in recognized_props:
+                prop_value = getattr(doc, prop_name, None)
+                recognized_found.append(f"{group_name}.{prop_name} = {prop_value}")
+            else:
+                prop_value = getattr(doc, prop_name, None) 
+                unrecognized_found.append(f"{group_name}.{prop_name} = {prop_value}")
+    
+    # Log findings
+    if recognized_found:
+        log("Document properties found:")
+        for prop_info in recognized_found:
+            log(f"  {prop_info}")
+    else:
+        log("No recognized document properties found")
+        
+    if unrecognized_found:
+        warn("Unrecognized document properties found (check for typos):")
+        for prop_info in unrecognized_found:
+            warn(f"  {prop_info}")
 
 
 
@@ -3183,6 +3233,16 @@ class CuraExporter(ThreeMFExporter):
 
 EXPORT_CLASSES = {'PrusaSlicer': PrusaSlicerExporter, 'Cura': CuraExporter}
 
+# Registry of recognized document-level properties
+RECOGNIZED_DOCUMENT_PROPERTIES = {
+    'PrintFlow': {
+        'SlicerFormat', 'SlicerPath', 'RunSlicer', 'AppendVersion',
+        'ExportDelimiter', 'LinkTreePriority', 'AutoExportPattern',
+        'PrintFlowDebug', 'ExportVersion', 'ExportPattern'
+    }
+    # Add other property groups here as needed
+}
+
 
 # END 3MF Export Framework
 ################################################################################
@@ -3297,6 +3357,7 @@ def main(**kwargs):
             return
 
         _setup_debug_mode(doc)
+        validate_document_properties(doc)
         fn = kwargs.get('filename', export_filename(op, doc))
 
         # Phase 1: Object processing

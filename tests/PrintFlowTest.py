@@ -608,9 +608,18 @@ def get_key_objects_for_inspection(test_name, test_config, result):
 def execute_printflow_with_checkpoints(test_name, test_config):
     """Execute PrintFlow and handle checkpoint inspection."""
     PrintFlow.debug("Running PrintFlow main()...")
+    
+    # Check if test expects an error
+    expected_error = test_config.get('expect_error')
+    
     try:
         result = PrintFlow.main(RunSlicer=False)
         PrintFlow.debug("PrintFlow main() completed successfully")
+        
+        # If we expected an error but didn't get one, that's a test failure
+        if expected_error:
+            PrintFlow.debug(f"TEST FAILURE: Expected error '{expected_error}' but PrintFlow succeeded")
+            return False
 
         key_objects = get_key_objects_for_inspection(test_name, test_config,
                                                      result)
@@ -631,9 +640,21 @@ def execute_printflow_with_checkpoints(test_name, test_config):
         ]
         for line in traceback.format_exc().strip().split('\n'):
             exception_details.append(f"  {line}")
-        exception_details.append("PrintFlow main() failed due to exception")
-        PrintFlow.debug('\n'.join(exception_details))
-        return False
+            
+        # Check if this is an expected error
+        if expected_error:
+            error_message = str(e)
+            if expected_error in error_message:
+                PrintFlow.debug(f"SUCCESS: Got expected error: {expected_error}")
+                return True
+            else:
+                exception_details.append(f"TEST FAILURE: Expected error '{expected_error}' but got '{error_message}'")
+                PrintFlow.debug('\n'.join(exception_details))
+                return False
+        else:
+            exception_details.append("PrintFlow main() failed due to exception")
+            PrintFlow.debug('\n'.join(exception_details))
+            return False
 
 def compare_test_results(test_name, test_config, temp_3mf):
     """Compare actual vs expected test results."""
@@ -737,7 +758,10 @@ def run_single_test(test_name, test_config):
     if not execute_printflow_with_checkpoints(test_name, test_config):
         return False
 
-    if os.path.exists(TEST_3MF_PATH):
+    # For error-expected tests, we've already validated success in execute_printflow_with_checkpoints
+    if test_config.get('expect_error'):
+        result = True  # Success was already determined by getting expected error
+    elif os.path.exists(TEST_3MF_PATH):
         PrintFlow.debug(f"SUCCESS: 3MF file created: {TEST_3MF_PATH}")
         result = compare_test_results(test_name, test_config, TEST_3MF_PATH)
         PrintFlow.debug(f"KEEPING 3MF FILE FOR DEBUGGING: {TEST_3MF_PATH}")
